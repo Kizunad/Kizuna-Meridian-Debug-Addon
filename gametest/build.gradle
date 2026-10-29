@@ -1,0 +1,40 @@
+plugins { id 'fabric-loom' }
+
+description = '调试库 GameTest 装配。'
+
+dependencies {
+    minecraft 'com.mojang:minecraft:1.20.1'
+    mappings 'net.fabricmc:yarn:1.20.1+build.10:v2'
+    modImplementation 'net.fabricmc:fabric-loader:0.16.10'
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.92.3+1.20.1'
+    implementation project(':verification')
+    def debugJar = files(rootProject.file('fabric/build/libs/kizuna-meridian-debug-addon-fabric-0.1.0-SNAPSHOT.jar'))
+    debugJar.builtBy(':fabric:jar')
+    modImplementation debugJar
+    modImplementation files(
+            rootProject.file('../Kizuna-Meridian-Human-Addon/fabric/build/libs/kizuna-meridian-human-addon-fabric-0.1.0-SNAPSHOT.jar'),
+            rootProject.file('../Kizuna-Meridian-Vanilla-Damage-Addon/fabric/build/libs/kizuna-meridian-vanilla-damage-addon-fabric-0.1.0-SNAPSHOT.jar'),
+            rootProject.file('../Kizuna-Meridian-Vanilla-Humanoid-Threatening/fabric/build/libs/kizuna-meridian-vanilla-humanoid-threatening-fabric-0.1.0-SNAPSHOT.jar'))
+}
+
+tasks.named('compileJava') {
+    dependsOn ':fabric:jar'
+}
+
+processResources {
+    from(project(':fabric').sourceSets.main.resources) { exclude 'fabric.mod.json' }
+    from(project(':shared').sourceSets.main.resources)
+}
+
+loom {
+    mods { meridian_debug_test { sourceSet sourceSets.main } }
+    runs {
+        gametest {
+            server()
+            name 'Meridian Debug GameTest'
+            runDir 'build/gametest'
+            vmArg '-Dfabric-api.gametest'
+            vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
+        }
+    }
+}

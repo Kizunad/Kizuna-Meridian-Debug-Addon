@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        maven { url = 'https://maven.fabricmc.net/' }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'kizuna-meridian-debug-addon'
+include 'shared', 'server', 'fabric', 'verification'
+
+includeBuild(providers.gradleProperty('meridianFrameworkDir')
+        .getOrElse('../Kizuna-Meridian-Mod-Framework')) {
+    dependencySubstitution {
+        substitute module('local.meridian:server') using project(':server')
+    }
+}

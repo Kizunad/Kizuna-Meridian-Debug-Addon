@@ -1,0 +1,8 @@
+description = '调试库的纯 Java 格式化与健康计划。'
+
+dependencies {
+    api 'local.meridian:server'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+test { useJUnit() }

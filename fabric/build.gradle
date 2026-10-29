@@ -1,0 +1,85 @@
+plugins { id 'fabric-loom' }
+
+description = '调试物品、命令和服务端快照推送。'
+
+repositories {
+    maven { url = 'https://maven.fabricmc.net/' }
+}
+
+def humanJar = rootProject.file('../Kizuna-Meridian-Human-Addon/fabric/build/libs/kizuna-meridian-human-addon-fabric-0.1.0-SNAPSHOT.jar')
+def damageJar = rootProject.file('../Kizuna-Meridian-Vanilla-Damage-Addon/fabric/build/libs/kizuna-meridian-vanilla-damage-addon-fabric-0.1.0-SNAPSHOT.jar')
+def damageServerJar = rootProject.file('../Kizuna-Meridian-Vanilla-Damage-Addon/server/build/libs/kizuna-meridian-vanilla-damage-addon-server-0.1.0-SNAPSHOT.jar')
+def humanoidJar = rootProject.file('../Kizuna-Meridian-Vanilla-Humanoid-Threatening/fabric/build/libs/kizuna-meridian-vanilla-humanoid-threatening-fabric-0.1.0-SNAPSHOT.jar')
+
+dependencies {
+    minecraft 'com.mojang:minecraft:1.20.1'
+    mappings 'net.fabricmc:yarn:1.20.1+build.10:v2'
+    modImplementation 'net.fabricmc:fabric-loader:0.16.10'
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.92.3+1.20.1'
+    implementation project(':server')
+    include project(':server')
+    include implementation('local.meridian:server')
+    include implementation('com.google.protobuf:protobuf-java:4.36.2')
+    modImplementation files(humanJar, damageJar, humanoidJar)
+    // 观察回执引用 Damage 的纯 Java 类型；运行时由必装 Damage 模组提供。
+    compileOnly files(damageServerJar)
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') { expand version: project.version }
+    from(project(':shared').sourceSets.main.resources)
+}
+
+apply from: '../../Kizuna-Meridian-Mod-Framework/scripts/full-assembly.gradle'
+
+loom {
+    mods { meridian_debug { sourceSet sourceSets.main } }
+    runs { server { runDir 'build/server' } }
+}
+
+// GameTest 只扩展当前模组的测试源集，避免配置期读取尚未生成的自身 JAR。
+sourceSets {
+    gametest {
+        compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+        runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
+    }
+}
+
+afterEvaluate {
+    tasks.named('runGametest') {
+        doFirst {
+            def runDirectory = file('build/gametest')
+            runDirectory.mkdirs()
+            new File(runDirectory, 'eula.txt').text = 'eula=true\n'
+            new File(runDirectory, 'server.properties').text = '''online-mode=false
+server-ip=127.0.0.1
+server-port=0
+level-type=flat
+generate-structures=false
+view-distance=2
+simulation-distance=2
+'''
+        }
+    }
+}
+
+dependencies {
+    gametestRuntimeOnly project(':server')
+}
+
+loom {
+    mods {
+        meridian_debug_test { sourceSet sourceSets.gametest }
+    }
+    runs {
+        gametest {
+            server()
+            name 'Meridian Debug GameTest'
+            source sourceSets.gametest
+            runDir 'build/gametest'
+            vmArg '-Dfabric-api.gametest'
+            vmArg '-Dfabric-api.gametest.report-file=build/gametest-results.xml'
+        }
+    }
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "meridian_debug",
+  "version": "${version}",
+  "name": "Kizuna's Meridian Debug Addon",
+  "description": "Meridian 身体、伤害和恢复调试工具",
+  "authors": ["Kizunad"],
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.kizuna.meridian.debug.fabric.DebugFabric"],
+    "client": ["dev.kizuna.meridian.debug.fabric.client.DebugClient"]
+  },
+  "depends": {
+    "java": ">=17",
+    "minecraft": "1.20.1",
+    "fabricloader": ">=0.16.10",
+    "fabric-api": "*",
+    "meridian_human_host": "*",
+    "meridian_vanilla_damage": "*",
+    "meridian_humanoid_host": "*"
+  }
+}
