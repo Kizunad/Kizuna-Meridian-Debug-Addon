@@ -69,6 +69,35 @@ final class DebugBodyAccess {
         return Optional.empty();
     }
 
+    static Optional<BodySnapshot> submitExertion(LivingEntity entity, BodySnapshot body,
+                                                 BodyCommand command) {
+        // 组织做功使用宿主专用 exertion 通道，避免把可信资源操作伪装成健康效果。
+        String requestId = UUID.randomUUID().toString();
+        BodyCommand boundCommand = command.toBuilder()
+                .setBodyId(body.getId())
+                .setExpectedRevision(body.getRevision())
+                .build();
+        RequestEnvelope envelope = RequestEnvelope.newBuilder()
+                .setProtocolVersion(MeridianProtocol.VERSION)
+                .setRequestId(requestId)
+                .setBodyCommand(boundCommand)
+                .build();
+        HealthHostRequest request = HealthHostRequest.newBuilder()
+                .setProtocolVersion(1)
+                .setRequestId(requestId)
+                .setSubjectId(entity.getUuidAsString())
+                .setExertion(envelope)
+                .build();
+        for (BodyHealthHost host : hosts) {
+            HealthHostResponse response = exchange(host, request);
+            if (response.hasUnbound()) {
+                continue;
+            }
+            return Optional.of(response.getBody());
+        }
+        return Optional.empty();
+    }
+
     private static Optional<BodySnapshot> exchangeInspect(HealthHostRequest request) {
         BodySnapshot found = null;
         for (BodyHealthHost host : hosts) {

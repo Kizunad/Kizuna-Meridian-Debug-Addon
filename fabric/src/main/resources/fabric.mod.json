@@ -18,6 +18,7 @@
     "fabric-api": "*",
     "meridian_human_host": "*",
     "meridian_vanilla_damage": "*",
-    "meridian_humanoid_host": "*"
+    "meridian_humanoid_host": "*",
+    "meridian_technique": "*"
   }
 }

@@ -7,9 +7,14 @@ repositories {
 }
 
 def humanJar = rootProject.file('../Kizuna-Meridian-Human-Addon/fabric/build/libs/kizuna-meridian-human-addon-fabric-0.1.0-SNAPSHOT.jar')
+def humanServerJar = rootProject.file('../Kizuna-Meridian-Human-Addon/server/build/libs/kizuna-meridian-human-addon-server-0.1.0-SNAPSHOT.jar')
 def damageJar = rootProject.file('../Kizuna-Meridian-Vanilla-Damage-Addon/fabric/build/libs/kizuna-meridian-vanilla-damage-addon-fabric-0.1.0-SNAPSHOT.jar')
 def damageServerJar = rootProject.file('../Kizuna-Meridian-Vanilla-Damage-Addon/server/build/libs/kizuna-meridian-vanilla-damage-addon-server-0.1.0-SNAPSHOT.jar')
 def humanoidJar = rootProject.file('../Kizuna-Meridian-Vanilla-Humanoid-Threatening/fabric/build/libs/kizuna-meridian-vanilla-humanoid-threatening-fabric-0.1.0-SNAPSHOT.jar')
+def techniqueDirectory = rootProject.file(providers.gradleProperty('meridianTechniqueDir')
+        .getOrElse('../Kizuna-Meridian-Technique-Framework'))
+def techniqueFabricJar = new File(techniqueDirectory,
+        'fabric/build/libs/kizuna-meridian-technique-framework-fabric-0.1.0-SNAPSHOT.jar')
 
 dependencies {
     minecraft 'com.mojang:minecraft:1.20.1'
@@ -19,16 +24,29 @@ dependencies {
     implementation project(':server')
     include project(':server')
     include implementation('local.meridian:server')
+    implementation 'local.meridian.technique:server'
     include implementation('com.google.protobuf:protobuf-java:4.36.2')
     modImplementation files(humanJar, damageJar, humanoidJar)
+    modImplementation files(techniqueFabricJar)
     // 观察回执引用 Damage 的纯 Java 类型；运行时由必装 Damage 模组提供。
     compileOnly files(damageServerJar)
+    // 复活费用读取必装 Human 的同一内容数据，不复制调试专用常量。
+    compileOnly files(humanServerJar)
 }
 
 processResources {
     inputs.property 'version', project.version
     filesMatching('fabric.mod.json') { expand version: project.version }
     from(project(':shared').sourceSets.main.resources)
+}
+
+// Loom 只按坐标复用 modprocessing 里的嵌套 JAR，SNAPSHOT 坐标不变时会把旧 server JAR 打进发布 JAR；
+// 每次打发布 JAR 前清掉该缓存，让 include 的 JAR 按当前产物重新生成。
+def clearNestedJarCache = tasks.register('clearNestedJarCache', Delete) {
+    delete layout.buildDirectory.dir('loom-cache/temp/modprocessing')
+}
+tasks.named('remapJar') {
+    dependsOn clearNestedJarCache
 }
 
 apply from: '../../Kizuna-Meridian-Mod-Framework/scripts/full-assembly.gradle'

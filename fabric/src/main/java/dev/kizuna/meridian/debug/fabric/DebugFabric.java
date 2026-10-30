@@ -4,7 +4,8 @@ import dev.kizuna.meridian.debug.DamageLogEntry;
 import dev.kizuna.meridian.debug.DamageLogFormatter;
 import dev.kizuna.meridian.debug.DamageSpilloverLog;
 import dev.kizuna.meridian.debug.HealPlan;
-import dev.kizuna.meridian.humanoid.fabric.HumanoidHealthHost;
+import dev.kizuna.meridian.human.server.HumanRevival;
+import dev.kizuna.meridian.protocol.pb.ActivityMessages.ActivityEffort;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
@@ -13,6 +14,14 @@ import dev.kizuna.meridian.protocol.pb.HealthMessages.HealBody;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.Healing;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.RestoreFatigue;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
+import dev.kizuna.meridian.protocol.pb.MeridianMessages.FailureCode;
+import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
+import dev.kizuna.meridian.technique.fabric.world.TechniqueLeaps;
+import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.ActiveCast;
+import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueProgress;
+import dev.kizuna.meridian.technique.server.TechniqueErrors;
+import dev.kizuna.meridian.technique.server.TechniqueHost;
+import dev.kizuna.meridian.technique.server.TechniqueService;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.fabricmc.api.ModInitializer;
@@ -31,11 +40,16 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -46,10 +60,13 @@ public final class DebugFabric implements ModInitializer {
     static final int PERMISSION_LEVEL = 2;
     private static final int LENS_REFRESH_TICKS = 10;
     private static final int MAX_TARGET_NAME_LENGTH = 64;
+    private static final int BODY_CHAT_LIMIT = 2800;
+    private static final String BODY_LOG_DIRECTORY = "meridian/body-logs";
     private static final String HEALTH_SOURCE = "meridian_debug:command";
-    private static final String ZHENYUAN_COMMAND = "meridian zhenyuan fill";
     private final DamageWatchRegistry watches = new DamageWatchRegistry();
     private final AggroLinkRegistry aggroLinks = new AggroLinkRegistry();
+    private final LeapWatchRegistry leapWatches = new LeapWatchRegistry();
+    private final TechniqueFailureWatch techniqueFailures = new TechniqueFailureWatch();
     private int tickCounter;
 
     @Override
@@ -62,11 +79,18 @@ public final class DebugFabric implements ModInitializer {
                 DebugCommands.register(dispatcher));
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             watches.clear(handler.player.getUuid());
+            leapWatches.clear(handler.player.getUuid());
+            techniqueFailures.clear(handler.player.getUuid());
             aggroLinks.clearPlayer(handler.player);
         });
-        ServerLifecycleEvents.SERVER_STOPPED.register(aggroLinks::clearRuntimeState);
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            aggroLinks.clearRuntimeState(server);
+            techniqueFailures.clearAll();
+        });
         ServerTickEvents.END_SERVER_TICK.register(this::tick);
         VanillaDamageFabric.registerDamageObserver(this::recordDamage);
+        TechniqueFabric.CAST_OBSERVED.register(techniqueFailures::record);
+        TechniqueLeaps.addLeapListener(this::recordLeap);
     }
 
     static int watchAll(ServerCommandSource source) throws CommandSyntaxException {
@@ -93,6 +117,222 @@ public final class DebugFabric implements ModInitializer {
         DebugFabric.INSTANCE.watches.stop(player);
         source.sendFeedback(() -> Text.literal("伤害日志已关闭"), false /* broadcastToOps */);
         return 1;
+    }
+
+    static int setFatigue(ServerCommandSource source, Collection<? extends Entity> selected,
+                           String selector, double ratio) {
+        int successCount = 0;
+        for (Entity entity : selected) {
+            if (!(entity instanceof LivingEntity living)) {
+                source.sendError(Text.literal("目标不是活体：" + entity.getName().getString()));
+                continue;
+            }
+            try {
+                BodySnapshot body = requireBody(living);
+                List<dev.kizuna.meridian.protocol.pb.BodyMessages.TissueDefinition> tissues =
+                        DebugFatigue.select(body, selector);
+                if (tissues.isEmpty()) {
+                    throw new IllegalArgumentException("目标身体没有匹配组织：" + selector);
+                }
+                DebugFatigue.set(living, body, tissues, ratio);
+                successCount++;
+                source.sendFeedback(() -> Text.literal("疲劳已设置：" + living.getName().getString()
+                        + " / " + selector + " = " + ratio), false /* broadcastToOps */);
+            } catch (RuntimeException failure) {
+                report(source, living, failure, "疲劳设置失败");
+            }
+        }
+        return successCount;
+    }
+
+    static int mutateTechnique(ServerCommandSource source, Collection<? extends Entity> selected,
+                               TechniqueAction action, String techniqueId) {
+        int successCount = 0;
+        for (Entity entity : selected) {
+            try {
+                if (action == TechniqueAction.LEARN) {
+                    TechniqueFabric.service().learn(entity.getUuid(), techniqueId);
+                } else {
+                    DebugTechniqueAccess.forget(entity.getUuid(), techniqueId);
+                }
+                successCount++;
+                source.sendFeedback(() -> Text.literal("功法调试已完成：" + entity.getName().getString()
+                        + " / " + techniqueId), false /* broadcastToOps */);
+            } catch (TechniqueErrors.HostRejected rejected) {
+                source.sendError(Text.literal("功法操作失败：" + rejected.failure().name()));
+            } catch (RuntimeException failure) {
+                source.sendError(Text.literal("功法操作失败：" + failure.getMessage()));
+            }
+        }
+        return successCount;
+    }
+
+    static int clearTechniqueCooldowns(ServerCommandSource source,
+                                       Collection<? extends Entity> selected) {
+        int successCount = 0;
+        for (Entity entity : selected) {
+            try {
+                DebugTechniqueAccess.clearCooldowns(entity.getUuid());
+                successCount++;
+                source.sendFeedback(() -> Text.literal("功法冷却已清除：" + entity.getName().getString()),
+                        false /* broadcastToOps */);
+            } catch (TechniqueErrors.HostRejected rejected) {
+                source.sendError(Text.literal("功法冷却清除失败：" + rejected.failure().name()));
+            } catch (RuntimeException failure) {
+                source.sendError(Text.literal("功法冷却清除失败：" + failure.getMessage()));
+            }
+        }
+        return successCount;
+    }
+
+    static int techniqueStatus(ServerCommandSource source, Entity entity) {
+        try {
+            UUID entityId = entity.getUuid();
+            TechniqueHost host = DebugTechniqueAccess.host(entityId);
+            dev.kizuna.meridian.core.BodySnapshot coreBody = host.inspect().body();
+            BodySnapshot body = dev.kizuna.meridian.protocol.BodyProtobuf.toMessage(coreBody);
+            TechniqueProgress progress = dev.kizuna.meridian.technique.server.TechniqueState.read(coreBody);
+            TechniqueFailureWatch.Failure failure = INSTANCE.techniqueFailures.latest(entityId);
+            String status = techniqueStatusText(body, progress, failure);
+            source.sendFeedback(() -> Text.literal(status), false /* broadcastToOps */);
+            return 1;
+        } catch (TechniqueErrors.HostRejected rejected) {
+            source.sendError(Text.literal("功法状态读取失败：" + rejected.failure().name()));
+            return 0;
+        } catch (RuntimeException failure) {
+            source.sendError(Text.literal("功法状态读取失败：" + failure.getMessage()));
+            return 0;
+        }
+    }
+
+    static Set<String> techniqueIds() {
+        var registry = TechniqueFabric.service().registry();
+        return Stream.of(registry.books().stream().map(item -> item.getId()),
+                        registry.volumes().stream().map(item -> item.getId()),
+                        registry.definitions().stream().map(item -> item.getId()))
+                .flatMap(stream -> stream)
+                .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+    }
+
+    static int watchLeaps(ServerCommandSource source) throws CommandSyntaxException {
+        ServerPlayerEntity player = source.getPlayerOrThrow();
+        INSTANCE.leapWatches.watchAll(player);
+        source.sendFeedback(() -> Text.literal("跃步日志已开启"), false /* broadcastToOps */);
+        return 1;
+    }
+
+    static int watchLeapTargets(ServerCommandSource source, Collection<? extends Entity> selected)
+            throws CommandSyntaxException {
+        ServerPlayerEntity player = source.getPlayerOrThrow();
+        Set<UUID> targetIds = selected.stream().map(Entity::getUuid)
+                .collect(java.util.stream.Collectors.toSet());
+        INSTANCE.leapWatches.watchTargets(player, targetIds);
+        source.sendFeedback(() -> Text.literal("跃步日志已开启，已限制目标"), false /* broadcastToOps */);
+        return 1;
+    }
+
+    static int stopLeapWatch(ServerCommandSource source) throws CommandSyntaxException {
+        ServerPlayerEntity player = source.getPlayerOrThrow();
+        INSTANCE.leapWatches.stop(player);
+        source.sendFeedback(() -> Text.literal("跃步日志已关闭"), false /* broadcastToOps */);
+        return 1;
+    }
+
+    private void recordLeap(TechniqueLeaps.LeapAttempt attempt) {
+        // 功法库在服务端每次付费起跳后回调一次，只发给正在观察该实体的在线管理员。
+        LivingEntity actor = attempt.actor();
+        MinecraftServer server = actor.getServer();
+        if (server == null) {
+            return;
+        }
+        String line = leapLine(attempt);
+        for (ServerPlayerEntity viewer : server.getPlayerManager().getPlayerList()) {
+            if (leapWatches.accepts(viewer, actor)) {
+                viewer.sendMessage(Text.literal(line), false /* overlay */);
+            }
+        }
+    }
+
+    static int bodySummary(ServerCommandSource source, Entity entity) {
+        if (!(entity instanceof LivingEntity living)) {
+            source.sendError(Text.literal("目标不是活体：" + entity.getName().getString()));
+            return 0;
+        }
+        try {
+            BodySnapshot body = requireBody(living);
+            String summary = DebugBodySummary.summary(body);
+            if (summary.length() <= BODY_CHAT_LIMIT) {
+                source.sendFeedback(() -> Text.literal(summary), false /* broadcastToOps */);
+                return 1;
+            }
+            Path detail = writeBodyDetails(source.getServer(), living, body);
+            source.sendFeedback(() -> Text.literal(summary + "\n详情：" + detail),
+                    false /* broadcastToOps */);
+            return 1;
+        } catch (RuntimeException failure) {
+            report(source, living, failure, "身体摘要读取失败");
+            return 0;
+        }
+    }
+
+    static int setQi(ServerCommandSource source, Collection<? extends Entity> selected, double amount) {
+        int successCount = 0;
+        for (Entity entity : selected) {
+            if (!(entity instanceof LivingEntity living)) {
+                source.sendError(Text.literal("目标不是活体：" + entity.getName().getString()));
+                continue;
+            }
+            try {
+                FailureCode failure = DebugQiBridge.set(living, amount);
+                if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
+                    source.sendError(Text.literal("真元设置失败：" + failure.name()));
+                    continue;
+                }
+                successCount++;
+                double total = DebugBodyAccess.inspect(living)
+                        .map(DebugFabric::lumenTotal)
+                        .orElse(0.0);
+                source.sendFeedback(() -> Text.literal(String.format(java.util.Locale.ROOT,
+                                "真元已设置：%s = %.4f 元", living.getName().getString(), total)),
+                        false /* broadcastToOps */);
+            } catch (DebugBodyAccess.DebugHostFailure failure) {
+                source.sendError(Text.literal("真元设置失败：" + failure.code().name()));
+            } catch (RuntimeException failure) {
+                report(source, living, failure, "真元设置失败");
+            }
+        }
+        return successCount;
+    }
+
+    static int revive(ServerCommandSource source, Collection<? extends Entity> selected) {
+        // 每个目标独立走可信健康事务，活体拒绝与寿元不足都由 Framework 裁定。
+        int successCount = 0;
+        for (Entity entity : selected) {
+            if (!(entity instanceof LivingEntity living)) {
+                source.sendError(Text.literal("目标没有身体：" + entity.getName().getString()));
+                continue;
+            }
+            try {
+                var body = DebugBodyAccess.inspect(living).orElseThrow();
+                var command = BodyCommand.newBuilder()
+                        .setReviveBody(HumanRevival.request(HEALTH_SOURCE))
+                        .build();
+                var revived = DebugBodyAccess.submit(living, body, command).orElseThrow();
+                successCount++;
+                source.sendFeedback(() -> Text.literal("已复活：" + living.getName().getString()),
+                        false /* broadcastToOps */);
+                if (revived.getVitality().getLifespanLimitSeconds() <= revived.getVitality().getAgeSeconds()
+                        + revived.getVitality().getSpentLifespanSeconds()) {
+                    source.sendFeedback(() -> Text.literal("寿元已耗尽，下次时间推进将寿尽。"),
+                            false /* broadcastToOps */);
+                }
+            } catch (DebugBodyAccess.DebugHostFailure failure) {
+                source.sendError(Text.literal("复活失败：" + failure.code().name()));
+            } catch (RuntimeException failure) {
+                report(source, living, failure, "复活失败");
+            }
+        }
+        return successCount;
     }
 
     static int healAll(ServerCommandSource source, Collection<? extends Entity> selected) {
@@ -301,10 +541,10 @@ public final class DebugFabric implements ModInitializer {
         try {
             BodySnapshot initial = requireBody(target);
             switch (mode) {
-                case ALL -> healAllState(source, target, initial);
+                case ALL -> healAllState(target, initial);
                 case HEALTH, LIMBS -> submitHp(target, initial, HealPlan.HpScope.PARTS);
                 case STAMINA -> submitFatigue(target, initial);
-                case ZHENYUAN -> fillZhenyuan(source, target);
+                case ZHENYUAN -> fillZhenyuan(target);
             }
             source.sendFeedback(
                     () -> Text.literal("恢复完成：" + target.getName().getString()),
@@ -316,11 +556,11 @@ public final class DebugFabric implements ModInitializer {
         }
     }
 
-    private static void healAllState(ServerCommandSource source, LivingEntity target, BodySnapshot initial) {
-        // all 先恢复全部 HP，再清疲劳，最后复用 Human 已有真元 fill 命令。
+    private static void healAllState(LivingEntity target, BodySnapshot initial) {
+        // all 先恢复全部 HP，再清疲劳，最后经宿主调试入口补满真元。
         BodySnapshot afterHp = submitHp(target, initial, HealPlan.HpScope.ALL_MODULES);
         BodySnapshot afterFatigue = submitFatigue(target, afterHp);
-        fillZhenyuan(source, target);
+        fillZhenyuan(target);
         if (afterFatigue.getRevision() < afterHp.getRevision()) {
             throw new IllegalStateException("恢复事务版本未递增");
         }
@@ -360,18 +600,11 @@ public final class DebugFabric implements ModInitializer {
                 () -> new IllegalStateException("目标身体在提交时失去宿主"));
     }
 
-    private static void fillZhenyuan(ServerCommandSource source, LivingEntity target) {
-        // 玩家复用 Human 命令，类人实体复用其宿主的受限调试事务入口。
-        if (target instanceof ServerPlayerEntity player) {
-            ServerCommandSource delegated = source.withEntity(player);
-            int result = player.getServer().getCommandManager().executeWithPrefix(delegated, ZHENYUAN_COMMAND);
-            if (result == 0) {
-                throw new IllegalStateException("真元恢复被宿主拒绝");
-            }
-            return;
-        }
-        if (!HumanoidHealthHost.fillZhenyuan(target)) {
-            throw new IllegalStateException("类人实体真元恢复被宿主拒绝");
+    private static void fillZhenyuan(LivingEntity target) {
+        // 玩家与类人都走各自宿主的公开调试入口，拒绝码原样带进错误文本。
+        FailureCode failure = DebugQiBridge.fill(target);
+        if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
+            throw new IllegalStateException("真元恢复被宿主拒绝：" + failure.name());
         }
     }
 
@@ -526,6 +759,123 @@ public final class DebugFabric implements ModInitializer {
         // 命令失败不回滚其他目标，只报告当前实体的固定错误文本。
         LOGGER.log(Level.WARNING, "调试恢复失败 subject=" + target.getUuidAsString(), failure);
         source.sendError(Text.literal("恢复失败：" + failure.getMessage()));
+    }
+
+    private static void report(ServerCommandSource source, LivingEntity target,
+                               RuntimeException failure, String prefix) {
+        LOGGER.log(Level.WARNING, "调试操作失败 subject=" + target.getUuidAsString(), failure);
+        String message = failure.getMessage();
+        if (failure instanceof DebugBodyAccess.DebugHostFailure hostFailure) {
+            message = hostFailure.code().name();
+        }
+        source.sendError(Text.literal(prefix + "：" + message));
+    }
+
+    private static double lumenTotal(BodySnapshot body) {
+        return body.getMeridianStatesList().stream()
+                .flatMap(state -> state.getLumenQi().getEntriesList().stream())
+                .mapToDouble(entry -> entry.getAmount())
+                .sum();
+    }
+
+    private static String techniqueStatusText(BodySnapshot body, TechniqueProgress progress,
+                                              TechniqueFailureWatch.Failure failure) {
+        long now = body.getSettledAt().getElapsedMillis();
+        String active = activeCastText(progress, now);
+        String cooldowns = progress.getCooldownsMap().entrySet().stream()
+                .filter(entry -> entry.getValue() > now)
+                .map(entry -> entry.getKey() + "=" + (entry.getValue() - now) + "ms")
+                .sorted()
+                .toList().toString();
+        String known = progress.getKnownList().stream()
+                .map(item -> item.getTechnique().getId() + "@" + item.getTechnique().getVersion())
+                .toList().toString();
+        String lastCast;
+        if (progress.hasLastCast()) {
+            var previous = progress.getLastCast();
+            lastCast = previous.getTechnique().getId() + "/" + previous.getEnding().name();
+        } else {
+            lastCast = "无";
+        }
+        String lastFailure;
+        if (failure == null) {
+            lastFailure = "无";
+        } else {
+            lastFailure = failure.display();
+        }
+        return "功法状态 " + body.getId() + "\n当前施放：" + active
+                + "\n最近一次失败：" + lastFailure
+                + "\n最近一次施放：" + lastCast
+                + "\n已学：" + known
+                + "\n冷却：" + cooldowns;
+    }
+
+    private static String activeCastText(TechniqueProgress progress, long now) {
+        if (!progress.hasActiveCast()) {
+            return "无";
+        }
+        ActiveCast active = progress.getActiveCast();
+        long remaining;
+        String phase;
+        if (now < active.getWarmupEndMillis()) {
+            phase = "WARMUP";
+            remaining = active.getWarmupEndMillis() - now;
+        } else if (now < active.getActiveEndMillis()) {
+            phase = "ACTIVE";
+            remaining = active.getActiveEndMillis() - now;
+        } else {
+            phase = "RECOVERY";
+            remaining = Math.max(0, active.getRecoveryEndMillis() - now);
+        }
+        return active.getRequest().getTechnique().getId() + " / " + phase + " / " + remaining + "ms";
+    }
+
+    private static String leapLine(TechniqueLeaps.LeapAttempt attempt) {
+        // 被拒只显示宿主给出的原因；成功显示落点类型、坐标和实际提交给各组织的做功。
+        TechniqueService.LeapExertion exertion = attempt.exertion();
+        if (!exertion.accepted()) {
+            return "跃步被拒：" + exertion.rejection();
+        }
+        var landing = attempt.landing();
+        var point = landing.point();
+        String efforts = exertion.efforts().stream()
+                .map(DebugFabric::effortText)
+                .toList().toString();
+        return String.format(java.util.Locale.ROOT, "跃步 LEAP 落点=%s %.2f %.2f %.2f，做功=%s",
+                landing.surface().name(), point.x(), point.y(), point.z(), efforts);
+    }
+
+    private static String effortText(ActivityEffort effort) {
+        // 单条做功按功率乘时长折算焦耳，模块 ID 取组织或器官中实际设置的一项。
+        String module = switch (effort.getModuleCase()) {
+            case TISSUE_ID -> effort.getTissueId();
+            case ORGAN_ID -> effort.getOrganId();
+            case MODULE_NOT_SET -> "未定模块";
+        };
+        double joules = effort.getWatts() * effort.getSeconds();
+        return String.format(java.util.Locale.ROOT, "%s=%.3fJ", module, joules);
+    }
+
+    private static Path writeBodyDetails(MinecraftServer server, LivingEntity target, BodySnapshot body) {
+        // 详情写进游戏运行目录下的固定子目录，换机器或换实例都不依赖本机绝对路径。
+        try {
+            Path runDirectory = server.getRunDirectory().toPath();
+            Path directory = runDirectory.resolve(BODY_LOG_DIRECTORY).toAbsolutePath().normalize();
+            Files.createDirectories(directory);
+            String safeName = target.getName().getString().replaceAll("[^a-zA-Z0-9._-]", "_");
+            String stamp = Instant.now().toString().replace(":", "-");
+            Path file = directory.resolve("body-" + safeName + "-" + stamp + ".txt");
+            String details = DebugSnapshotText.full(body);
+            Files.writeString(file, details, StandardCharsets.UTF_8);
+            return file;
+        } catch (java.io.IOException failure) {
+            throw new IllegalStateException("身体详情写入失败：" + failure.getMessage(), failure);
+        }
+    }
+
+    enum TechniqueAction {
+        LEARN,
+        FORGET
     }
 
     private record HitPart(String id, String name) {

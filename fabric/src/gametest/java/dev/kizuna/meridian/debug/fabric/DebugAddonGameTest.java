@@ -16,6 +16,7 @@ import net.minecraft.network.ClientConnection;
 import net.minecraft.network.NetworkSide;
 import net.minecraft.network.PacketCallbacks;
 import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.s2c.play.GameMessageS2CPacket;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.test.GameTest;
@@ -232,6 +233,11 @@ public final class DebugAddonGameTest implements FabricGameTest {
             player.changeGameMode(GameMode.SURVIVAL);
         }
 
+        List<String> chat() {
+            // 只读视图，按发送顺序列出服务端发给该玩家的聊天栏文字。
+            return List.copyOf(connection.chat);
+        }
+
         @Override
         public void close() {
             // 走真实断线入口，让 Human 和观察状态清理玩家身份。
@@ -241,6 +247,7 @@ public final class DebugAddonGameTest implements FabricGameTest {
     }
 
     private static final class RecordingConnection extends ClientConnection {
+        private final List<String> chat = new ArrayList<>();
         private boolean open = true;
 
         private RecordingConnection() {
@@ -250,14 +257,23 @@ public final class DebugAddonGameTest implements FabricGameTest {
 
         @Override
         public void send(Packet<?> packet) {
-            // 测试只需要连接存活，网络包本身由宿主登录流程验证。
+            // 其余网络包由宿主登录流程验证，这里只留下聊天栏文字供调试日志断言。
+            record(packet);
         }
 
         @Override
         public void send(Packet<?> packet, PacketCallbacks callbacks) {
             // 立即成功回调，避免异步发送阻塞 GameTest 主线程。
+            record(packet);
             if (callbacks != null) {
                 callbacks.onSuccess();
+            }
+        }
+
+        private void record(Packet<?> packet) {
+            // 动作栏提示不进聊天栏，不计入调试日志行数。
+            if (packet instanceof GameMessageS2CPacket message && !message.overlay()) {
+                chat.add(message.content().getString());
             }
         }
 

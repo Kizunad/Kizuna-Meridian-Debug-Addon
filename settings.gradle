@@ -12,6 +12,14 @@ include 'shared', 'server', 'fabric', 'verification'
 includeBuild(providers.gradleProperty('meridianFrameworkDir')
         .getOrElse('../Kizuna-Meridian-Mod-Framework')) {
     dependencySubstitution {
+        substitute module('local.meridian:client') using project(':client')
         substitute module('local.meridian:server') using project(':server')
+    }
+}
+
+includeBuild(providers.gradleProperty('meridianTechniqueDir')
+        .getOrElse('../Kizuna-Meridian-Technique-Framework')) {
+    dependencySubstitution {
+        substitute module('local.meridian.technique:server') using project(':server')
     }
 }

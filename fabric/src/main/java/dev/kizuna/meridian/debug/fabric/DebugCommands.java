@@ -1,17 +1,23 @@
 package dev.kizuna.meridian.debug.fabric;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import dev.kizuna.meridian.debug.HealPlan;
 import net.minecraft.command.argument.EntityArgumentType;
+import net.minecraft.command.argument.IdentifierArgumentType;
 import net.minecraft.entity.Entity;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.util.Identifier;
 
 import java.util.Collection;
+import java.util.List;
 
 /** 调试命令树；每个分支都在执行点再次检查权限和实体归属。 */
 final class DebugCommands {
@@ -27,7 +33,13 @@ final class DebugCommands {
                 .requires(source -> source.hasPermissionLevel(DebugFabric.PERMISSION_LEVEL));
         root.then(damageCommand());
         root.then(healCommand());
+        root.then(reviveCommand());
         root.then(aggroCommand());
+        root.then(fatigueCommand());
+        root.then(techniqueCommand());
+        root.then(leapCommand());
+        root.then(bodyCommand());
+        root.then(qiCommand());
         dispatcher.register(root);
     }
 
@@ -69,6 +81,14 @@ final class DebugCommands {
         return CommandManager.literal("damage").then(watch);
     }
 
+    private static LiteralArgumentBuilder<ServerCommandSource> reviveCommand() {
+        // 无参数指向自己；实体选择器沿用原版补全，权限由根节点统一检查。
+        return CommandManager.literal("revive")
+                .executes(context -> DebugFabric.revive(context.getSource(), List.of(self(context))))
+                .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                        .executes(context -> DebugFabric.revive(context.getSource(), targets(context))));
+    }
+
     private static com.mojang.brigadier.builder.LiteralArgumentBuilder<ServerCommandSource> healCommand() {
         // 模式 literal 明确表达健康、部位、体力和真元四条服务端路径。
         var targets = CommandManager.argument("targets", EntityArgumentType.entities());
@@ -103,6 +123,149 @@ final class DebugCommands {
         return CommandManager.literal("limb").then(part);
     }
 
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<ServerCommandSource> fatigueCommand() {
+        var set = CommandManager.literal("set")
+                .then(fatigueSelfSelection())
+                .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                        .then(fatigueSelection()));
+        var clear = CommandManager.literal("clear")
+                .executes(context -> DebugFabric.setFatigue(context.getSource(),
+                        java.util.List.of(self(context)), DebugFatigue.ALL, 0))
+                .then(CommandManager.argument("selection", StringArgumentType.string())
+                        .suggests(DebugCommands::suggestFatigueSelection)
+                        .executes(context -> DebugFabric.setFatigue(context.getSource(),
+                                java.util.List.of(self(context)),
+                                StringArgumentType.getString(context, "selection"), 0)))
+                .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                        .executes(context -> DebugFabric.setFatigue(context.getSource(), targets(context),
+                                DebugFatigue.ALL, 0))
+                        .then(CommandManager.argument("selection", StringArgumentType.string())
+                                .suggests(DebugCommands::suggestFatigueSelection)
+                                .executes(context -> DebugFabric.setFatigue(context.getSource(), targets(context),
+                                        StringArgumentType.getString(context, "selection"), 0))));
+        return CommandManager.literal("fatigue")
+                .then(set)
+                .then(clear);
+    }
+
+    private static com.mojang.brigadier.builder.RequiredArgumentBuilder<ServerCommandSource, String>
+            fatigueSelfSelection() {
+        var selection = CommandManager.argument("selection", StringArgumentType.string())
+                .suggests(DebugCommands::suggestFatigueSelection);
+        var ratio = CommandManager.argument("ratio", DoubleArgumentType.doubleArg(0, 1))
+                .executes(context -> DebugFabric.setFatigue(context.getSource(),
+                        java.util.List.of(self(context)),
+                        StringArgumentType.getString(context, "selection"),
+                        DoubleArgumentType.getDouble(context, "ratio")));
+        return selection.then(ratio);
+    }
+
+    private static com.mojang.brigadier.builder.RequiredArgumentBuilder<ServerCommandSource, String>
+            fatigueSelection() {
+        var selection = CommandManager.argument("selection", StringArgumentType.string())
+                .suggests(DebugCommands::suggestFatigueSelection);
+        var ratio = CommandManager.argument("ratio", DoubleArgumentType.doubleArg(0, 1))
+                .executes(context -> DebugFabric.setFatigue(context.getSource(), targets(context),
+                        StringArgumentType.getString(context, "selection"),
+                        DoubleArgumentType.getDouble(context, "ratio")));
+        return selection.then(ratio);
+    }
+
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<ServerCommandSource> techniqueCommand() {
+        var learn = CommandManager.literal("learn")
+                .then(techniqueSelfTarget(DebugFabric.TechniqueAction.LEARN))
+                .then(techniqueTargets(DebugFabric.TechniqueAction.LEARN));
+        var forget = CommandManager.literal("forget")
+                .then(techniqueSelfTarget(DebugFabric.TechniqueAction.FORGET))
+                .then(techniqueTargets(DebugFabric.TechniqueAction.FORGET));
+        var cooldown = CommandManager.literal("cooldown")
+                .then(CommandManager.literal("clear")
+                        .executes(context -> DebugFabric.clearTechniqueCooldowns(
+                                context.getSource(), java.util.List.of(self(context))))
+                        .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                                .executes(context -> DebugFabric.clearTechniqueCooldowns(
+                                        context.getSource(), targets(context)))));
+        var status = CommandManager.literal("status")
+                .executes(context -> DebugFabric.techniqueStatus(context.getSource(), self(context)))
+                .then(CommandManager.argument("target", EntityArgumentType.entity())
+                        .executes(context -> DebugFabric.techniqueStatus(
+                                context.getSource(), EntityArgumentType.getEntity(context, "target"))));
+        return CommandManager.literal("technique")
+                .then(learn)
+                .then(forget)
+                .then(cooldown)
+                .then(status);
+    }
+
+    private static com.mojang.brigadier.builder.ArgumentBuilder<ServerCommandSource, ?> techniqueTargets(
+            DebugFabric.TechniqueAction action) {
+        var targets = CommandManager.argument("targets", EntityArgumentType.entities());
+        var id = CommandManager.argument("id", IdentifierArgumentType.identifier())
+                .suggests(DebugCommands::suggestTechniqueIds)
+                .executes(context -> DebugFabric.mutateTechnique(context.getSource(), targets(context),
+                        action, techniqueId(context)));
+        return targets.then(id);
+    }
+
+    private static com.mojang.brigadier.builder.RequiredArgumentBuilder<ServerCommandSource, Identifier>
+            techniqueSelfTarget(DebugFabric.TechniqueAction action) {
+        return CommandManager.argument("id", IdentifierArgumentType.identifier())
+                .suggests(DebugCommands::suggestTechniqueIds)
+                .executes(context -> DebugFabric.mutateTechnique(context.getSource(),
+                        java.util.List.of(self(context)), action, techniqueId(context)));
+    }
+
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<ServerCommandSource> leapCommand() {
+        var on = CommandManager.literal("on")
+                .executes(context -> DebugFabric.watchLeaps(context.getSource()))
+                .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                        .executes(context -> DebugFabric.watchLeapTargets(context.getSource(), targets(context))));
+        var off = CommandManager.literal("off")
+                .executes(context -> DebugFabric.stopLeapWatch(context.getSource()))
+                .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                        .executes(context -> DebugFabric.stopLeapWatch(context.getSource())));
+        return CommandManager.literal("leap").then(CommandManager.literal("watch").then(on).then(off));
+    }
+
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<ServerCommandSource> bodyCommand() {
+        return CommandManager.literal("body")
+                .executes(context -> DebugFabric.bodySummary(context.getSource(), self(context)))
+                .then(CommandManager.argument("target", EntityArgumentType.entity())
+                        .executes(context -> DebugFabric.bodySummary(context.getSource(),
+                                EntityArgumentType.getEntity(context, "target"))));
+    }
+
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<ServerCommandSource> qiCommand() {
+        return CommandManager.literal("qi")
+                .then(CommandManager.literal("set")
+                        .then(qiSelfAmount())
+                        .then(CommandManager.argument("targets", EntityArgumentType.entities())
+                                .then(qiTargetAmount())));
+    }
+
+    private static com.mojang.brigadier.builder.RequiredArgumentBuilder<ServerCommandSource, Double>
+            qiSelfAmount() {
+        return CommandManager.argument("amount", DoubleArgumentType.doubleArg(0))
+                .executes(context -> DebugFabric.setQi(context.getSource(),
+                        java.util.List.of(self(context)), DoubleArgumentType.getDouble(context, "amount")));
+    }
+
+    private static com.mojang.brigadier.builder.RequiredArgumentBuilder<ServerCommandSource, Double>
+            qiTargetAmount() {
+        return CommandManager.argument("amount", DoubleArgumentType.doubleArg(0))
+                .executes(context -> DebugFabric.setQi(context.getSource(), targets(context),
+                        DoubleArgumentType.getDouble(context, "amount")));
+    }
+
+    private static String techniqueId(CommandContext<ServerCommandSource> context) {
+        // 功法、卷册和书都用带命名空间的 ID，按原版标识符参数读取冒号。
+        return IdentifierArgumentType.getIdentifier(context, "id").toString();
+    }
+
+    private static Entity self(CommandContext<ServerCommandSource> context) throws CommandSyntaxException {
+        return context.getSource().getEntityOrThrow();
+    }
+
     private static Collection<? extends net.minecraft.entity.Entity> targets(
             CommandContext<ServerCommandSource> context)
             throws CommandSyntaxException {
@@ -124,6 +287,52 @@ final class DebugCommands {
             }
         } catch (CommandSyntaxException ignored) {
             // 选择器尚未完整输入时没有可读取的目标，保留 Brigadier 默认结果。
+        }
+        return builder.buildFuture();
+    }
+
+    private static java.util.concurrent.CompletableFuture<com.mojang.brigadier.suggestion.Suggestions>
+    suggestFatigueSelection(CommandContext<ServerCommandSource> context, SuggestionsBuilder builder) {
+        Collection<? extends net.minecraft.entity.Entity> selected = fatigueSuggestionTargets(context);
+        for (net.minecraft.entity.Entity entity : selected) {
+            if (entity instanceof net.minecraft.entity.LivingEntity living) {
+                DebugBodyAccess.inspect(living).ifPresent(body -> DebugFatigue.completionValues(body)
+                        .forEach(value -> suggestSelection(builder, value)));
+            }
+        }
+        return builder.buildFuture();
+    }
+
+    private static void suggestSelection(SuggestionsBuilder builder, String value) {
+        // 标签含冒号，补全给出带引号的可解析文本；输入未加引号时也按原值前缀匹配。
+        String escaped = StringArgumentType.escapeIfRequired(value);
+        String remaining = builder.getRemaining();
+        if (value.startsWith(remaining) || escaped.startsWith(remaining)) {
+            builder.suggest(escaped);
+        }
+    }
+
+    private static Collection<? extends net.minecraft.entity.Entity> fatigueSuggestionTargets(
+            CommandContext<ServerCommandSource> context) {
+        try {
+            return targets(context);
+        } catch (CommandSyntaxException ignored) {
+            try {
+                return List.of(self(context));
+            } catch (CommandSyntaxException noExecutor) {
+                return List.of();
+            }
+        }
+    }
+
+    private static java.util.concurrent.CompletableFuture<com.mojang.brigadier.suggestion.Suggestions>
+    suggestTechniqueIds(CommandContext<ServerCommandSource> context, SuggestionsBuilder builder) {
+        try {
+            DebugFabric.techniqueIds().stream()
+                    .filter(id -> id.startsWith(builder.getRemaining()))
+                    .forEach(builder::suggest);
+        } catch (RuntimeException ignored) {
+            // 服务器目录尚未启动时保留空补全，执行点会返回明确错误。
         }
         return builder.buildFuture();
     }

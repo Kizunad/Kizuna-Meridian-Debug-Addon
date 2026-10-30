@@ -8,7 +8,10 @@
     "fabric-gametest": [
       "dev.kizuna.meridian.debug.fabric.DebugAddonGameTest",
       "dev.kizuna.meridian.debug.fabric.DamageSpilloverGameTest",
-      "dev.kizuna.meridian.debug.fabric.AggroLinkGameTest"
+      "dev.kizuna.meridian.debug.fabric.AggroLinkGameTest",
+      "dev.kizuna.meridian.debug.fabric.DebugToolsGameTest",
+      "dev.kizuna.meridian.debug.fabric.DebugRevivalGameTest",
+      "dev.kizuna.meridian.debug.fabric.DebugCommandGameTest"
     ]
   },
   "depends": {
