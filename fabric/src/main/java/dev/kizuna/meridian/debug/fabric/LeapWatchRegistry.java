@@ -12,16 +12,24 @@ import net.minecraft.world.entity.LivingEntity;
 final class LeapWatchRegistry {
     private final Map<UUID, Set<UUID>> targets = new HashMap<>();
 
-    void watchAll(ServerPlayer player) {
-        targets.put(player.getUUID(), Set.of());
-    }
-
     void watchTargets(ServerPlayer player, Set<UUID> targetIds) {
         targets.put(player.getUUID(), Set.copyOf(targetIds));
     }
 
-    void stop(ServerPlayer player) {
-        targets.remove(player.getUUID());
+    int unwatch(ServerPlayer player, Set<UUID> targetIds) {
+        // 按目标关闭：只删去这些目标，删空后不再保留观察状态。返回剩余目标数。
+        Set<UUID> selected = targets.get(player.getUUID());
+        if (selected == null) {
+            return 0;
+        }
+        Set<UUID> remaining = new HashSet<>(selected);
+        remaining.removeAll(targetIds);
+        if (remaining.isEmpty()) {
+            targets.remove(player.getUUID());
+            return 0;
+        }
+        targets.put(player.getUUID(), Set.copyOf(remaining));
+        return remaining.size();
     }
 
     void clear(UUID playerId) {
@@ -29,12 +37,10 @@ final class LeapWatchRegistry {
     }
 
     boolean accepts(ServerPlayer viewer, LivingEntity actor) {
+        // 只输出目标集合里的实体；省略目标开启时集合只有观察者本人。
         Set<UUID> selected = targets.get(viewer.getUUID());
         if (selected == null) {
             return false;
-        }
-        if (selected.isEmpty()) {
-            return actor.getUUID().equals(viewer.getUUID());
         }
         return selected.contains(actor.getUUID());
     }

@@ -6,30 +6,38 @@
 
 - `meridian_debug:limb_lens`：手持时每 10 tick 显示准星实体的部位 HP、状态、总 HP、体力和真元；右键打印完整快照。
 - `meridian_debug:aggro_link`：选择两个可攻击生物，持续覆盖其攻击目标；普通右键互相仇恨，潜行右键建立单向仇恨。
-- `/meridian_debug damage watch on|off [targets]`：记录自己参与的双向伤害，包含来源、命中部位、原始与结算剂量和部位剩余 HP。部位伤害溢出时追加原始余量、来源系数和各接收部位的 HP 损失；全身无部位可承受的余量单独标注。日志读取同一事务的固定回执，即使图腾随后恢复血量也保留原始分配事实。
-- `/meridian_debug heal <targets> [all|health|limbs|stamina|zhenyuan]`：按目标恢复；省略模式时执行 `all`。
-- `/meridian_debug heal <targets> limb <部位> [数值]`：按 Human 身体的实际部位 ID 恢复。
-- `/meridian_debug revive [targets]`：省略目标时复活自己的死态身体；复用 Human 数据中的复活费用（初值一年）和 Framework 健康事务。最低 10% HP、肌肉满疲劳，寿元不足仍扣到零并提示，活体拒绝。它直接复活身体，不替代原版玩家死亡界面的重生按钮。
-- `/meridian_debug aggro <A> <B> [mutual|oneway]`：设置仇恨方向；`/meridian_debug aggro clear [targets]` 清除覆盖。
-- `/meridian_debug fatigue set <targets> <组织 ID|标签|all> <比例>` / `fatigue clear`：按 Framework 事务设置或清零组织疲劳。标签含冒号，需加引号，例如 `fatigue set @s "human:leg_muscle" 0.5`；补全直接给出带引号的文本。
-- `/meridian_debug technique learn|forget <targets> <功法 ID>`：直接操作目录功法；ID 按原版标识符读取，带命名空间，例如 `meridian_basic_techniques:light_step_volume`。`learn` 接受书、卷或式 ID，`forget` 接受式 ID。`technique cooldown clear` 清空冷却；`technique status` 查看当前施放阶段（WARMUP/ACTIVE/RECOVERY）、最近一次失败码、已学和冷却。
-- `/meridian_debug leap watch on|off [targets]`：每次服务端付费起跳记一行。成功的格式为 `跃步 LEAP 落点=<地面类型> x y z，做功=[组织=焦耳, …]`；被拒的格式为 `跃步被拒：<原因>`。等待落地间隔不记。
-- `/meridian_debug body <target>`：显示境界、真元、寿元、肢体力量和最高疲劳；过长详情写入游戏运行目录下的 `meridian/body-logs/`，聊天栏给出文件的绝对路径。
-- `/meridian_debug qi set <targets> <数量>`：把全身经脉内腔覆盖为游离态真元，总量由 Framework 按各经脉可用体积分配；宿主拒绝时原样报告失败码。`heal ... zhenyuan` 走同一调试入口补满内腔。
+
+指令统一挂在 Framework 的 `/meridian` 根下，权限都是 2，完整路径、权限与归属见 [Framework 指令页](https://github.com/Kizunad/Kizuna-Meridian-Mod-Framework/wiki/Commands)。本库登记的节点如下，省略 `[targets]` 时作用于执行者本人：
+
+- `/meridian watch damage on|off [targets]`：记录自己参与的双向伤害，包含来源、命中部位、原始与结算剂量和部位剩余 HP。部位伤害溢出时追加原始余量、来源系数和各接收部位的 HP 损失；全身无部位可承受的余量单独标注。日志读取同一事务的固定回执，即使图腾随后恢复血量也保留原始分配事实。`off` 按目标关闭，目标删空即停止。
+- `/meridian watch leap on|off [targets]`：每次服务端付费起跳记一行。成功的格式为 `跃步 LEAP 落点=<地面类型> x y z，做功=[组织=焦耳, …]`；被拒的格式为 `跃步被拒：<原因>`。等待落地间隔不记。
+- `/meridian body heal [targets] [all|health|stamina]`：按目标恢复；省略模式时执行 `all`，`all` 同时补满真元。
+- `/meridian body heal [targets] limb <部位> [数值]`：按目标身体的实际部位 ID 恢复。
+- `/meridian body revive [targets]`：复活死态身体；复用 Human 数据中的复活费用（初值一年）和 Framework 健康事务。最低 10% HP、肌肉满疲劳，寿元不足仍扣到零并提示，活体拒绝。它直接复活身体，不替代原版玩家死亡界面的重生按钮。
+- `/meridian body status [target] full`：经 Human 的公开入口挂在 `body status` 下，显示境界、真元、寿元、肢体力量和最高疲劳；过长详情写入游戏运行目录下的 `logs/meridian/`，聊天栏给出文件的绝对路径。
+- `/meridian qi fill [targets] [<经脉> [数量]]`：补满内腔；指定经脉时只补该脉，带数量时把该脉补到这一总量，只补差额不扣除。
+- `/meridian qi set [targets] <数量> [<经脉|all> lumen|wall <密度>]`：覆盖真元库存，总量由 Framework 按各经脉可用体积分配；省略后段时覆盖全身内腔为游离态。宿主拒绝时原样报告失败码。玩家与类人生物都可作目标。
+- `/meridian technique forget [targets] <功法 ID>`：直接遗忘目录功法；ID 按原版标识符读取，带命名空间，例如 `meridian_basic_techniques:light_step`。`technique cooldown clear [targets]` 清空冷却；`technique status [target]` 查看当前施放阶段（WARMUP/ACTIVE/RECOVERY）、最近一次失败码、已学和冷却。学习功法由 Technique 登记（`technique learn`）。
+- `/meridian humanoid aggro <A> <B> [mutual|oneway]`：设置仇恨方向；`/meridian humanoid aggro clear [targets]` 清除覆盖，省略目标时清除全部（仇恨链接只连生物，不含玩家）。
+- `/meridian debug fatigue set [targets] <组织 ID|标签|all> <比例>` / `fatigue clear [targets] <组织 ID|标签|all>`：按 Framework 事务设置或清零组织疲劳。标签含冒号，需加引号，例如 `fatigue set @s "human:leg_muscle" 0.5`；补全直接给出带引号的文本。
+
+省略目标与给出单个词的写法共用一个位置：`/meridian qi fill <词>` 总按经脉解析，要指定玩家请写在经脉之前，例如 `/meridian qi fill <玩家> <经脉>`，或用选择器。
 
 ## 命令与补全来源
 
 | 命令参数 | 补全来源 |
 | --- | --- |
-| `damage watch on/off` | literal；`targets` 使用原版实体选择器 |
-| `heal targets` | 原版实体选择器 |
-| `revive [targets]` | literal；可选目标使用原版实体选择器 |
-| `heal ... limb 部位` | 目标身体快照的 `BodyStructure.parts` |
-| `heal ...` 模式 | literal：`all`、`health`、`limbs`、`stamina`、`zhenyuan` |
-| `fatigue ... 组织` | 目标身体快照中的组织 ID 与标签；含冒号的值补全为带引号文本 |
-| `leap watch` | literal：`on`、`off`；`targets` 使用原版实体选择器 |
-| `body`、`qi set`、`technique status` | 原版实体选择器 |
-| `technique ... 功法` | 当前已加载功法目录的书、卷和式 ID |
+| `[targets]` | 原版实体选择器 |
+| `watch damage`、`watch leap` | literal：`on`、`off` |
+| `body heal` 模式 | literal：`all`、`health`、`stamina` |
+| `body heal ... limb 部位` | 目标身体快照的 `BodyStructure.parts` |
+| `body status ... full` | literal |
+| `qi fill`、`qi set` 经脉 | 目标身体快照的经脉 ID；`qi set` 另给 `all` |
+| `qi set ...` 账户 | literal：`lumen`、`wall` |
+| `technique forget` 功法 | 当前已加载功法目录的书、卷和式 ID |
+| `technique cooldown` | literal：`clear` |
+| `humanoid aggro` | 原版实体选择器；literal：`clear`、`mutual`、`oneway` |
+| `debug fatigue ... 组织` | 目标身体快照中的组织 ID 与标签；含冒号的值补全为带引号文本 |
 
 ## 宿主接口
 

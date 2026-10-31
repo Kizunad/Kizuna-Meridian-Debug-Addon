@@ -5,6 +5,7 @@ import dev.kizuna.meridian.protocol.BodyProtobuf;
 import dev.kizuna.meridian.protocol.QiDensity;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianDefinition;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianState;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.TissueDefinition;
 import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
 import dev.kizuna.meridian.technique.fabric.world.TechniqueLeaps;
@@ -29,7 +30,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-/** 调试命令走真实命令树和宿主：功法学忘、冷却、状态、跃步观察、身体摘要、疲劳、真元与补全。 */
+/** 调试命令走真实命令树和宿主：功法遗忘、冷却、状态、跃步观察、身体明细、疲劳、真元与补全。 */
 public final class DebugCommandGameTest implements FabricGameTest {
     private static final int OP_LEVEL = 4;
     private static final int JOIN_TICKS = 2;
@@ -43,6 +44,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
     private static final int SPAWN_Z = 2;
     private static final int VINDICATOR_SAMPLES = 4;
     private static final double QI_SHARE = 0.5;
+    private static final double SET_DENSITY = 0.05;
     private static final double FATIGUE_RATIO = 0.25;
     private static final double TOLERANCE = 0.000001;
     private static final String VOLUME = "meridian_basic_techniques:light_step_volume";
@@ -69,10 +71,10 @@ public final class DebugCommandGameTest implements FabricGameTest {
             try (online) {
                 var source = source(online);
                 assertBody(context, online, source);
-                assertCommand(context, source, "meridian_debug fatigue set @s " + QUOTED_LEG_MUSCLE + " "
+                assertCommand(context, source, "meridian debug fatigue set @s " + QUOTED_LEG_MUSCLE + " "
                         + FATIGUE_RATIO);
                 assertLegFatigue(context, online.player, FATIGUE_RATIO);
-                assertCommand(context, source, "meridian_debug fatigue clear @s " + QUOTED_LEG_MUSCLE);
+                assertCommand(context, source, "meridian debug fatigue clear @s " + QUOTED_LEG_MUSCLE);
                 assertLegFatigue(context, online.player, 0);
             }
             context.succeed();
@@ -81,20 +83,40 @@ public final class DebugCommandGameTest implements FabricGameTest {
 
     @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
     public void eachDebugCommandCompletesItsNextArgument(GameTestHelper context) {
-        // 每条新命令至少一处原版补全：疲劳标签带引号、功法 ID 带命名空间、子命令与实体选择器。
+        // 每条调试指令至少一处补全：疲劳标签带引号、功法 ID 带命名空间、部位与经脉取自实际身体、字面量与实体选择器。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
         context.runAfterDelay(JOIN_TICKS, () -> {
             try (online) {
                 var source = source(online);
-                assertSuggests(context, source, "meridian_debug fatigue set @s ", QUOTED_LEG_MUSCLE);
-                assertSuggests(context, source, "meridian_debug fatigue clear @s ", QUOTED_LEG_MUSCLE);
-                assertSuggests(context, source, "meridian_debug technique learn @s ", VOLUME);
-                assertSuggests(context, source, "meridian_debug technique forget @s ", TECHNIQUE);
-                assertSuggests(context, source, "meridian_debug technique cooldown ", "clear");
-                assertSuggests(context, source, "meridian_debug technique status @", "@s");
-                assertSuggests(context, source, "meridian_debug leap watch ", "on");
-                assertSuggests(context, source, "meridian_debug body @", "@s");
-                assertSuggests(context, source, "meridian_debug qi set @", "@s");
+                BodySnapshot body = DebugBodyAccess.inspect(online.player).orElseThrow();
+                String part = body.getStructure().getParts(0).getId();
+                String meridian = body.getStructure().getMeridians(0).getId();
+                assertSuggests(context, source, "meridian debug fatigue set @s ", QUOTED_LEG_MUSCLE);
+                assertSuggests(context, source, "meridian debug fatigue clear ", QUOTED_LEG_MUSCLE);
+                assertSuggests(context, source, "meridian technique forget @s ", TECHNIQUE);
+                assertSuggests(context, source, "meridian technique cooldown ", "clear");
+                assertSuggests(context, source, "meridian technique status @", "@s");
+                assertSuggests(context, source, "meridian watch ", "damage");
+                assertSuggests(context, source, "meridian watch leap ", "on");
+                assertSuggests(context, source, "meridian body status @s ", "full");
+                assertSuggests(context, source, "meridian body heal ", "stamina");
+                assertSuggests(context, source, "meridian body heal @s limb ", part);
+                assertSuggests(context, source, "meridian qi fill ", meridian);
+                assertSuggests(context, source, "meridian qi set @", "@s");
+                assertSuggests(context, source, "meridian qi set @s 1 ", "all");
+                assertSuggests(context, source, "meridian humanoid aggro ", "clear");
+            }
+            context.succeed();
+        });
+    }
+
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void qiFillAndSetTakeMeridianAccountAndDensity(GameTestHelper context) {
+        // 由 Human 移交的带参形式：按经脉补到指定量或补满，按经脉或全身覆盖内腔、外壁的数量与密度。
+        var online = new DebugAddonGameTest.DebugTestPlayer(context);
+        context.runAfterDelay(JOIN_TICKS, () -> {
+            try (online) {
+                assertQiParameters(context, online.player, source(online));
             }
             context.succeed();
         });
@@ -102,14 +124,14 @@ public final class DebugCommandGameTest implements FabricGameTest {
 
     @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
     public void qiCommandsAcceptFreshTrueQiVindicators(GameTestHelper context) {
-        // 命令生成的真炁卫道士带着生成器残余与高密度主元；qi set 覆盖到半满、heal zhenyuan 补满都不越过内腔。
+        // 命令生成的真炁卫道士带着生成器残余与高密度主元；qi set 覆盖到半满、qi fill 补满都不越过内腔。
         var source = context.getLevel().getServer().createCommandSourceStack()
                 .withLevel(context.getLevel())
                 .withPermission(OP_LEVEL);
         Vec3 position = Vec3.atBottomCenterOf(context.absolutePos(new BlockPos(SPAWN_X, SPAWN_Y, SPAWN_Z)));
         String coordinates = String.format(Locale.ROOT, "%.2f %.2f %.2f", position.x, position.y, position.z);
         for (int index = 0; index < VINDICATOR_SAMPLES; index++) {
-            assertCommand(context, source, "meridian humanoid summon vindicator true_qi " + coordinates);
+            assertCommand(context, source, "meridian humanoid spawn vindicator true_qi " + coordinates);
             Vindicator vindicator = summoned(context, position);
             try {
                 assertQiCommands(context, source, vindicator);
@@ -126,8 +148,8 @@ public final class DebugCommandGameTest implements FabricGameTest {
         online.player.moveTo(position.x, position.y, position.z, 0, 0);
         var source = source(online);
         assertCommand(context, source, "meridian opening complete @s all");
-        assertCommand(context, source, "meridian_debug heal @s zhenyuan");
-        assertCommand(context, source, "meridian_debug technique learn @s " + VOLUME);
+        assertCommand(context, source, "meridian qi fill @s");
+        assertCommand(context, source, "meridian technique learn @s " + VOLUME);
         assertStarted(context, cast(online), "学会后无法施放");
         assertStatus(context, online, source, CastPhase.WARMUP.name());
         context.runAfterDelay(settleTicks(), () -> guarded(online, () -> clearCooldown(context, online)));
@@ -139,7 +161,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         CastOutcome cooling = cast(online);
         context.assertTrue(cooling.getFailure() == TechniqueFailure.COOLING_DOWN, "冷却中仍可施放：" + cooling);
         assertStatus(context, online, source, TechniqueFailure.COOLING_DOWN.name());
-        assertCommand(context, source, "meridian_debug technique cooldown clear @s");
+        assertCommand(context, source, "meridian technique cooldown clear @s");
         assertStarted(context, cast(online), "清除冷却后无法立即施放");
         context.runAfterDelay(settleTicks(), () -> guarded(online, () -> leapAndForget(context, online)));
     }
@@ -147,7 +169,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
     private static void leapAndForget(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online) {
         // 上一次施放留下轻身状态；一次跃步恰好一行观察日志；忘记后施放按未学拒绝。
         var source = source(online);
-        assertCommand(context, source, "meridian_debug leap watch on");
+        assertCommand(context, source, "meridian watch leap on");
         context.assertTrue(TechniqueStatusBenefits.active(online.player).isPresent(), "施放没有留下轻身状态");
         online.player.setOnGround(true /* onGround */);
         int before = online.chat().size();
@@ -158,7 +180,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         context.assertTrue(leaps.size() == 1, "一次跃步没有恰好一行观察日志：" + leaps);
         String leap = leaps.get(0);
         context.assertTrue(leap.startsWith(LEAP_LINE) && leap.contains(EFFORT_MARK), "跃步日志缺少落点或做功：" + leap);
-        assertCommand(context, source, "meridian_debug technique forget @s " + TECHNIQUE);
+        assertCommand(context, source, "meridian technique forget @s " + TECHNIQUE);
         CastOutcome forgotten = cast(online);
         context.assertTrue(forgotten.getFailure() == TechniqueFailure.NOT_KNOWN, "忘记后没有按未学拒绝：" + forgotten);
         online.close();
@@ -207,7 +229,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
                                      CommandSourceStack source, String expected) {
         // 状态命令的回显就是管理员在聊天栏看到的文字。
         int before = online.chat().size();
-        assertCommand(context, source, "meridian_debug technique status");
+        assertCommand(context, source, "meridian technique status");
         String status = String.join("\n", newLines(online, before));
         context.assertTrue(status.contains(expected), "功法状态缺少 " + expected + "：" + status);
     }
@@ -217,7 +239,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         // 摘要的境界取宿主快照的枚举名，真元行同时给出余额与容量。
         BodySnapshot body = DebugBodyAccess.inspect(online.player).orElseThrow();
         int before = online.chat().size();
-        assertCommand(context, source, "meridian_debug body");
+        assertCommand(context, source, "meridian body status full");
         String summary = String.join("\n", newLines(online, before));
         boolean complete = summary.contains("境界：" + body.getRealm().name()) && summary.contains("真元：");
         context.assertTrue(complete, "身体摘要缺少境界或真元：" + summary);
@@ -256,18 +278,94 @@ public final class DebugCommandGameTest implements FabricGameTest {
 
     private static void assertQiCommands(GameTestHelper context, CommandSourceStack source,
                                          Vindicator vindicator) {
-        // 覆盖量取全身内腔按游离密度折算的一半；补满后逐条经脉不越过定义上限。
+        // 覆盖量取全身内腔按游离密度折算的一半；补满由卫道士自己执行省略目标的 qi fill，逐条经脉不越过定义上限。
         BodySnapshot initial = DebugBodyAccess.inspect(vindicator).orElseThrow();
         double totalVolume = initial.getStructure().getMeridiansList().stream()
                 .mapToDouble(MeridianDefinition::getLumenVolume)
                 .sum();
         String amount = String.format(Locale.ROOT, "%.6f", totalVolume * QiDensity.FREE * QI_SHARE);
         String uuid = vindicator.getStringUUID();
-        assertCommand(context, source, "meridian_debug qi set " + uuid + " " + amount);
+        assertCommand(context, source, "meridian qi set " + uuid + " " + amount);
         double total = lumenTotal(DebugBodyAccess.inspect(vindicator).orElseThrow());
         context.assertTrue(Math.abs(total - Double.parseDouble(amount)) < TOLERANCE, "qi set 余额不符：" + total);
-        assertCommand(context, source, "meridian_debug heal " + uuid + " zhenyuan");
+        assertCommand(context, vindicator.createCommandSourceStack().withPermission(OP_LEVEL), "meridian qi fill");
         assertWithinLumens(context, DebugBodyAccess.inspect(vindicator).orElseThrow());
+    }
+
+    private static void assertQiParameters(GameTestHelper context, LivingEntity player, CommandSourceStack source) {
+        // 先把全身内腔清零，之后每一步只看本步指定的经脉或账户。
+        MeridianDefinition meridian = DebugBodyAccess.inspect(player).orElseThrow().getStructure().getMeridians(0);
+        String id = meridian.getId();
+        assertCommand(context, source, "meridian qi set 0 all lumen " + QiDensity.FREE);
+        assertQi(context, lumenTotal(DebugBodyAccess.inspect(player).orElseThrow()), 0, "全身内腔没有清零");
+
+        // 省略目标、带经脉与数量：该脉补到这一总量，其他经脉仍为空。
+        double partial = rounded(meridian.getLumenVolume() * QiDensity.FREE * QI_SHARE);
+        assertCommand(context, source, "meridian qi fill " + id + " " + decimal(partial));
+        BodySnapshot afterPartial = DebugBodyAccess.inspect(player).orElseThrow();
+        assertQi(context, lumen(afterPartial, id), partial, "单脉没有补到指定量");
+        assertQi(context, lumenTotal(afterPartial), partial, "其他经脉被一并补入");
+
+        // 指定目标、只带经脉：补满该脉，仍不越过内腔上限。
+        assertCommand(context, source, "meridian qi fill @s " + id);
+        BodySnapshot afterFull = DebugBodyAccess.inspect(player).orElseThrow();
+        context.assertTrue(lumen(afterFull, id) > partial + TOLERANCE, "单脉没有补满：" + lumen(afterFull, id));
+        assertQi(context, lumenTotal(afterFull), lumen(afterFull, id), "补满单脉时其他经脉被一并补入");
+        assertWithinLumens(context, afterFull);
+
+        // 带参数的 qi set：一条经脉的内腔按给定密度覆盖，再把全身外壁按给定密度覆盖。
+        double lumenAmount = rounded(meridian.getLumenVolume() * SET_DENSITY * QI_SHARE);
+        assertCommand(context, source, "meridian qi set @s " + decimal(lumenAmount) + " " + id + " lumen "
+                + SET_DENSITY);
+        BodySnapshot afterLumen = DebugBodyAccess.inspect(player).orElseThrow();
+        assertQi(context, lumen(afterLumen, id), lumenAmount, "单脉内腔没有覆盖为指定量");
+        boolean dense = state(afterLumen, id).getLumenQi().getEntriesList().stream()
+                .allMatch(entry -> Math.abs(entry.getDensity() - SET_DENSITY) < TOLERANCE);
+        context.assertTrue(dense, "单脉内腔密度不是指定值：" + state(afterLumen, id).getLumenQi());
+        double wallVolume = afterLumen.getStructure().getMeridiansList().stream()
+                .mapToDouble(MeridianDefinition::getWallVolume)
+                .sum();
+        double wallAmount = rounded(wallVolume * SET_DENSITY * QI_SHARE);
+        assertCommand(context, source, "meridian qi set " + decimal(wallAmount) + " all wall " + SET_DENSITY);
+        assertQi(context, wallTotal(DebugBodyAccess.inspect(player).orElseThrow()), wallAmount, "全身外壁没有覆盖为指定量");
+    }
+
+    private static void assertQi(GameTestHelper context, double actual, double expected, String message) {
+        // 真元按浮点合计，比较时留同一份容差。
+        context.assertTrue(Math.abs(actual - expected) < TOLERANCE, message + "：" + actual + " ≠ " + expected);
+    }
+
+    private static double rounded(double amount) {
+        // 期望值与指令参数取同一份六位小数，断言不受格式化舍入影响。
+        return Double.parseDouble(decimal(amount));
+    }
+
+    private static String decimal(double amount) {
+        // 指令参数按固定小数位写出，避免科学计数法无法解析。
+        return String.format(Locale.ROOT, "%.6f", amount);
+    }
+
+    private static MeridianState state(BodySnapshot body, String id) {
+        // 按经脉 ID 取状态；测试只查询构型里第一条经脉，必然存在。
+        return body.getMeridianStatesList().stream()
+                .filter(state -> state.getId().equals(id))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static double lumen(BodySnapshot body, String id) {
+        // 单条经脉内腔的各密度条目合计。
+        return state(body, id).getLumenQi().getEntriesList().stream()
+                .mapToDouble(entry -> entry.getAmount())
+                .sum();
+    }
+
+    private static double wallTotal(BodySnapshot body) {
+        // 全部经脉外壁的各密度条目合计。
+        return body.getMeridianStatesList().stream()
+                .flatMap(state -> state.getWallQi().getEntriesList().stream())
+                .mapToDouble(entry -> entry.getAmount())
+                .sum();
     }
 
     private static double lumenTotal(BodySnapshot body) {

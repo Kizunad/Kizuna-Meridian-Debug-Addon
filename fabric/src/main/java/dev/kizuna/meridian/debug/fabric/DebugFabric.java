@@ -4,10 +4,13 @@ import dev.kizuna.meridian.debug.DamageLogEntry;
 import dev.kizuna.meridian.debug.DamageLogFormatter;
 import dev.kizuna.meridian.debug.DamageSpilloverLog;
 import dev.kizuna.meridian.debug.HealPlan;
+import dev.kizuna.meridian.fabric.MeridianCommands;
 import dev.kizuna.meridian.human.server.HumanRevival;
 import dev.kizuna.meridian.protocol.pb.ActivityMessages.ActivityEffort;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.HealthTarget;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianState;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.QiInventory;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.FatigueRelief;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.HealBody;
@@ -25,7 +28,6 @@ import dev.kizuna.meridian.technique.server.TechniqueService;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
@@ -46,6 +48,7 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -60,7 +63,7 @@ public final class DebugFabric implements ModInitializer {
     private static final int LENS_REFRESH_TICKS = 10;
     private static final int MAX_TARGET_NAME_LENGTH = 64;
     private static final int BODY_CHAT_LIMIT = 2800;
-    private static final String BODY_LOG_DIRECTORY = "meridian/body-logs";
+    private static final String BODY_LOG_DIRECTORY = "logs/meridian";
     private static final String HEALTH_SOURCE = "meridian_debug:command";
     private final DamageWatchRegistry watches = new DamageWatchRegistry();
     private final AggroLinkRegistry aggroLinks = new AggroLinkRegistry();
@@ -74,8 +77,7 @@ public final class DebugFabric implements ModInitializer {
         INSTANCE = this;
         DebugItems.register();
         DebugBodyAccess.bindHosts();
-        CommandRegistrationCallback.EVENT.register((dispatcher, registry, environment) ->
-                DebugCommands.register(dispatcher));
+        DebugCommands.register();
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             watches.clear(handler.player.getUUID());
             leapWatches.clear(handler.player.getUUID());
@@ -92,30 +94,38 @@ public final class DebugFabric implements ModInitializer {
         TechniqueLeaps.addLeapListener(this::recordLeap);
     }
 
-    static int watchAll(CommandSourceStack source) throws CommandSyntaxException {
-        // 开启全量观察只保存观察者身份，不把选择器实体复制进世界。
-        ServerPlayer player = source.getPlayerOrException();
-        DebugFabric.INSTANCE.watches.watchAll(player);
-        source.sendSuccess(() -> Component.literal("伤害日志已开启"), false /* broadcastToOps */);
-        return 1;
-    }
-
-    static int watchTargets(CommandSourceStack source, Collection<? extends Entity> selected)
-            throws CommandSyntaxException {
-        // 指定目标只保存 UUID，当前选择器结果本身不跨 tick 保留。
+    static int watchDamage(CommandSourceStack source, Collection<? extends Entity> selected,
+                           MeridianCommands.WatchSwitch watchSwitch) throws CommandSyntaxException {
+        // 观察状态只保存观察者与目标 UUID，选择器结果本身不跨 tick 保留；省略目标时只有执行者本人。
         ServerPlayer player = source.getPlayerOrException();
         Set<UUID> targetIds = selected.stream().map(Entity::getUUID).collect(java.util.stream.Collectors.toSet());
-        DebugFabric.INSTANCE.watches.watchTargets(player, targetIds);
-        source.sendSuccess(() -> Component.literal("伤害日志已开启，已限制目标"), false /* broadcastToOps */);
+        if (watchSwitch == MeridianCommands.WatchSwitch.ON) {
+            DebugFabric.INSTANCE.watches.watchTargets(player, targetIds);
+            String opened = watchOnText("伤害日志", player, targetIds);
+            source.sendSuccess(() -> Component.literal(opened), false /* broadcastToOps */);
+            return 1;
+        }
+
+        // off 按目标关闭，目标删空后整条观察结束。
+        int remaining = DebugFabric.INSTANCE.watches.unwatch(player, targetIds);
+        source.sendSuccess(() -> Component.literal(watchOffText("伤害日志", remaining)), false /* broadcastToOps */);
         return 1;
     }
 
-    static int watchOff(CommandSourceStack source) throws CommandSyntaxException {
-        // 关闭时同时删除指定目标过滤，下一次开启从空状态开始。
-        ServerPlayer player = source.getPlayerOrException();
-        DebugFabric.INSTANCE.watches.stop(player);
-        source.sendSuccess(() -> Component.literal("伤害日志已关闭"), false /* broadcastToOps */);
-        return 1;
+    private static String watchOnText(String channel, ServerPlayer player, Set<UUID> targetIds) {
+        // 只观察自己时沿用原来的开启提示，带其他目标时注明已限制目标。
+        if (targetIds.equals(Set.of(player.getUUID()))) {
+            return channel + "已开启";
+        }
+        return channel + "已开启，已限制目标";
+    }
+
+    private static String watchOffText(String channel, int remaining) {
+        // 删空即关闭；还有其他目标时说明剩余数量。
+        if (remaining == 0) {
+            return channel + "已关闭";
+        }
+        return channel + "已移除指定目标，仍观察 " + remaining + " 个目标";
     }
 
     static int setFatigue(CommandSourceStack source, Collection<? extends Entity> selected,
@@ -144,16 +154,13 @@ public final class DebugFabric implements ModInitializer {
         return successCount;
     }
 
-    static int mutateTechnique(CommandSourceStack source, Collection<? extends Entity> selected,
-                               TechniqueAction action, String techniqueId) {
+    static int forgetTechnique(CommandSourceStack source, Collection<? extends Entity> selected,
+                               String techniqueId) {
+        // 逐个目标遗忘同一个式；学习由功法库的 /meridian technique learn 负责。
         int successCount = 0;
         for (Entity entity : selected) {
             try {
-                if (action == TechniqueAction.LEARN) {
-                    TechniqueFabric.service().learn(entity.getUUID(), techniqueId);
-                } else {
-                    DebugTechniqueAccess.forget(entity.getUUID(), techniqueId);
-                }
+                DebugTechniqueAccess.forget(entity.getUUID(), techniqueId);
                 successCount++;
                 source.sendSuccess(() -> Component.literal("功法调试已完成：" + entity.getName().getString()
                         + " / " + techniqueId), false /* broadcastToOps */);
@@ -213,27 +220,22 @@ public final class DebugFabric implements ModInitializer {
                 .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
     }
 
-    static int watchLeaps(CommandSourceStack source) throws CommandSyntaxException {
-        ServerPlayer player = source.getPlayerOrException();
-        INSTANCE.leapWatches.watchAll(player);
-        source.sendSuccess(() -> Component.literal("跃步日志已开启"), false /* broadcastToOps */);
-        return 1;
-    }
-
-    static int watchLeapTargets(CommandSourceStack source, Collection<? extends Entity> selected)
-            throws CommandSyntaxException {
+    static int watchLeaps(CommandSourceStack source, Collection<? extends Entity> selected,
+                          MeridianCommands.WatchSwitch watchSwitch) throws CommandSyntaxException {
+        // 与伤害观察同形：on 以目标集合替换观察条件，省略目标时只看自己的跃步。
         ServerPlayer player = source.getPlayerOrException();
         Set<UUID> targetIds = selected.stream().map(Entity::getUUID)
                 .collect(java.util.stream.Collectors.toSet());
-        INSTANCE.leapWatches.watchTargets(player, targetIds);
-        source.sendSuccess(() -> Component.literal("跃步日志已开启，已限制目标"), false /* broadcastToOps */);
-        return 1;
-    }
+        if (watchSwitch == MeridianCommands.WatchSwitch.ON) {
+            INSTANCE.leapWatches.watchTargets(player, targetIds);
+            String opened = watchOnText("跃步日志", player, targetIds);
+            source.sendSuccess(() -> Component.literal(opened), false /* broadcastToOps */);
+            return 1;
+        }
 
-    static int stopLeapWatch(CommandSourceStack source) throws CommandSyntaxException {
-        ServerPlayer player = source.getPlayerOrException();
-        INSTANCE.leapWatches.stop(player);
-        source.sendSuccess(() -> Component.literal("跃步日志已关闭"), false /* broadcastToOps */);
+        // off 按目标关闭，目标删空后整条观察结束。
+        int remaining = INSTANCE.leapWatches.unwatch(player, targetIds);
+        source.sendSuccess(() -> Component.literal(watchOffText("跃步日志", remaining)), false /* broadcastToOps */);
         return 1;
     }
 
@@ -298,6 +300,74 @@ public final class DebugFabric implements ModInitializer {
                 source.sendFailure(Component.literal("真元设置失败：" + failure.code().name()));
             } catch (RuntimeException failure) {
                 report(source, living, failure, "真元设置失败");
+            }
+        }
+        return successCount;
+    }
+
+    static int setQiAccount(CommandSourceStack source, Collection<? extends Entity> selected, double amount,
+                            String meridianId, DebugCommands.QiAccount account, double density) {
+        // 带参数的 qi set：逐个目标覆盖所选经脉范围内一个账户的真元与密度，单个目标被拒不影响其他目标。
+        int successCount = 0;
+        for (Entity entity : selected) {
+            if (!(entity instanceof LivingEntity living)) {
+                source.sendFailure(Component.literal("目标不是活体：" + entity.getName().getString()));
+                continue;
+            }
+            try {
+                FailureCode failure = DebugQiBridge.set(living, amount, meridianId, account, density);
+                if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
+                    source.sendFailure(Component.literal("真元设置失败：" + failure.name()));
+                    continue;
+                }
+                successCount++;
+
+                // 反馈从提交后的快照读回该范围该账户的实际总量。
+                double total = DebugBodyAccess.inspect(living)
+                        .map(body -> accountTotal(body, meridianId, account))
+                        .orElse(0.0);
+                source.sendSuccess(() -> Component.literal(String.format(java.util.Locale.ROOT,
+                                "真元已设置：%s / %s%s = %.4f 元", living.getName().getString(),
+                                scopeLabel(meridianId), account.label(), total)),
+                        false /* broadcastToOps */);
+            } catch (DebugBodyAccess.DebugHostFailure failure) {
+                source.sendFailure(Component.literal("真元设置失败：" + failure.code().name()));
+            } catch (RuntimeException failure) {
+                report(source, living, failure, "真元设置失败");
+            }
+        }
+        return successCount;
+    }
+
+    static int fillQi(CommandSourceStack source, Collection<? extends Entity> selected, String meridianId,
+                      OptionalDouble amount) {
+        // 逐个目标经所属宿主的调试入口补入内腔真元，单个目标被拒不影响其他目标。
+        int successCount = 0;
+        for (Entity entity : selected) {
+            if (!(entity instanceof LivingEntity living)) {
+                source.sendFailure(Component.literal("目标不是活体：" + entity.getName().getString()));
+                continue;
+            }
+            try {
+                FailureCode failure = DebugQiBridge.fill(living, meridianId, amount);
+                if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
+                    source.sendFailure(Component.literal("真元补充失败：" + failure.name()));
+                    continue;
+                }
+                successCount++;
+
+                // 反馈从提交后的快照读回所选范围的内腔总量。
+                double total = DebugBodyAccess.inspect(living)
+                        .map(body -> accountTotal(body, meridianId, DebugCommands.QiAccount.LUMEN))
+                        .orElse(0.0);
+                source.sendSuccess(() -> Component.literal(String.format(java.util.Locale.ROOT,
+                                "真元已补充：%s / %s内腔 = %.4f 元", living.getName().getString(),
+                                scopeLabel(meridianId), total)),
+                        false /* broadcastToOps */);
+            } catch (DebugBodyAccess.DebugHostFailure failure) {
+                source.sendFailure(Component.literal("真元补充失败：" + failure.code().name()));
+            } catch (RuntimeException failure) {
+                report(source, living, failure, "真元补充失败");
             }
         }
         return successCount;
@@ -541,9 +611,8 @@ public final class DebugFabric implements ModInitializer {
             BodySnapshot initial = requireBody(target);
             switch (mode) {
                 case ALL -> healAllState(target, initial);
-                case HEALTH, LIMBS -> submitHp(target, initial, HealPlan.HpScope.PARTS);
+                case HEALTH -> submitHp(target, initial, HealPlan.HpScope.PARTS);
                 case STAMINA -> submitFatigue(target, initial);
-                case ZHENYUAN -> fillZhenyuan(target);
             }
             source.sendSuccess(
                     () -> Component.literal("恢复完成：" + target.getName().getString()),
@@ -770,6 +839,31 @@ public final class DebugFabric implements ModInitializer {
         source.sendFailure(Component.literal(prefix + "：" + message));
     }
 
+    private static double accountTotal(BodySnapshot body, String meridianId, DebugCommands.QiAccount account) {
+        // 合计所选经脉范围内所选账户的各密度条目；经脉 ID 为空时取全身。
+        return body.getMeridianStatesList().stream()
+                .filter(state -> meridianId.isEmpty() || state.getId().equals(meridianId))
+                .flatMap(state -> inventory(state, account).getEntriesList().stream())
+                .mapToDouble(entry -> entry.getAmount())
+                .sum();
+    }
+
+    private static QiInventory inventory(MeridianState state, DebugCommands.QiAccount account) {
+        // 外壁与内腔是同一经脉上两个独立的真元账户。
+        if (account == DebugCommands.QiAccount.WALL) {
+            return state.getWallQi();
+        }
+        return state.getLumenQi();
+    }
+
+    private static String scopeLabel(String meridianId) {
+        // 反馈里写出作用范围：空经脉 ID 即全身经脉。
+        if (meridianId.isEmpty()) {
+            return "全身经脉";
+        }
+        return meridianId + " ";
+    }
+
     private static double lumenTotal(BodySnapshot body) {
         return body.getMeridianStatesList().stream()
                 .flatMap(state -> state.getLumenQi().getEntriesList().stream())
@@ -870,11 +964,6 @@ public final class DebugFabric implements ModInitializer {
         } catch (java.io.IOException failure) {
             throw new IllegalStateException("身体详情写入失败：" + failure.getMessage(), failure);
         }
-    }
-
-    enum TechniqueAction {
-        LEARN,
-        FORGET
     }
 
     private record HitPart(String id, String name) {

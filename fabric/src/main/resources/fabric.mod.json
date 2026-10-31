@@ -16,6 +16,7 @@
     "minecraft": "1.20.1",
     "fabricloader": ">=0.16.10",
     "fabric-api": "*",
+    "meridian_framework": "*",
     "meridian_human_host": "*",
     "meridian_vanilla_damage": "*",
     "meridian_humanoid_host": "*",

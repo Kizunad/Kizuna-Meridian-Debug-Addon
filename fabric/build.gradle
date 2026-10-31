@@ -11,6 +11,8 @@ dependencies {
     mappings loom.officialMojangMappings()
     modImplementation libs.fabric.loader
     modImplementation libs.fabric.api
+    // /meridian 指令统一注册点（Framework 的 Fabric 模组 meridian_framework），Framework 组合时自动替换为源码工程。
+    modImplementation 'dev.kizuna.meridian:fabric'
     implementation project(':server')
     include project(':server')
     include implementation('local.meridian:server')

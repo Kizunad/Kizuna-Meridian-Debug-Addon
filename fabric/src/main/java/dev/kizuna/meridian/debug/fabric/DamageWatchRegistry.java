@@ -12,19 +12,25 @@ import net.minecraft.server.level.ServerPlayer;
 final class DamageWatchRegistry {
     private final Map<UUID, Set<UUID>> targets = new HashMap<>();
 
-    void watchAll(ServerPlayer player) {
-        // 空集合表示只按观察者自身过滤，不限制额外目标。
-        targets.put(player.getUUID(), Set.of());
-    }
-
     void watchTargets(ServerPlayer player, Set<UUID> targetIds) {
         // 复制选择器结果，后续实体集合变化不会修改已提交的观察条件。
         targets.put(player.getUUID(), Set.copyOf(targetIds));
     }
 
-    void stop(ServerPlayer player) {
-        // 下线和显式关闭都删除状态，不把观察权限保存进世界。
-        targets.remove(player.getUUID());
+    int unwatch(ServerPlayer player, Set<UUID> targetIds) {
+        // 按目标关闭：只删去这些目标，删空后不再保留观察状态，也不把观察权限保存进世界。返回剩余目标数。
+        Set<UUID> selected = targets.get(player.getUUID());
+        if (selected == null) {
+            return 0;
+        }
+        Set<UUID> remaining = new HashSet<>(selected);
+        remaining.removeAll(targetIds);
+        if (remaining.isEmpty()) {
+            targets.remove(player.getUUID());
+            return 0;
+        }
+        targets.put(player.getUUID(), Set.copyOf(remaining));
+        return remaining.size();
     }
 
     void clear(UUID playerId) {
@@ -33,13 +39,10 @@ final class DamageWatchRegistry {
     }
 
     boolean accepts(ServerPlayer viewer, VanillaDamageFabric.DamageEvent event) {
-        // 只有攻击方或受击方是观察者本人时才输出；额外目标再做一次交集过滤。
+        // 只有攻击方或受击方是观察者本人时才输出；目标集合再做一次交集过滤，集合只有本人时等于不限制。
         Set<UUID> selected = targets.get(viewer.getUUID());
         if (selected == null || !participates(viewer, event)) {
             return false;
-        }
-        if (selected.isEmpty()) {
-            return true;
         }
         return selected.contains(event.target().getUUID())
                 || (event.attacker() != null && selected.contains(event.attacker().getUUID()));

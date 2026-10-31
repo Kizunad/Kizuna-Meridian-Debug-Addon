@@ -27,12 +27,12 @@ public final class DebugRevivalGameTest implements FabricGameTest {
             double cost = HumanRevival.request("debug_test:revival").getLifespanSeconds();
             double spent = DebugBodyAccess.inspect(player).orElseThrow().getVitality().getSpentLifespanSeconds();
             confirmDeath(player);
-            context.assertTrue(command(source, "meridian_debug revive") == 1, "自身复活命令失败");
+            context.assertTrue(command(source, "meridian body revive") == 1, "自身复活命令失败");
             assertSpent(context, player, spent + cost);
-            context.assertTrue(command(source, "meridian_debug revive @s") == 0, "活体被重复复活");
+            context.assertTrue(command(source, "meridian body revive @s") == 0, "活体被重复复活");
             assertSpent(context, player, spent + cost);
             confirmDeath(player);
-            context.assertTrue(command(source, "meridian_debug revive @s") == 1, "目标选择器复活失败");
+            context.assertTrue(command(source, "meridian body revive @s") == 1, "目标选择器复活失败");
             assertSpent(context, player, spent + cost + cost);
             verifyCommandTree(context, source);
         }
@@ -71,15 +71,15 @@ public final class DebugRevivalGameTest implements FabricGameTest {
     }
 
     private static void verifyCommandTree(GameTestHelper context, CommandSourceStack source) {
-        // 检查真实根节点权限和 revive literal，再请求原版实体参数补全。
+        // 检查 body 分支下 revive 节点自带的权限和 literal 补全，再请求原版实体参数补全。
         var dispatcher = source.getServer().getCommands().getDispatcher();
-        var root = dispatcher.getRoot().getChild("meridian_debug");
-        context.assertTrue(!root.canUse(source.withPermission(0)), "普通玩家可调用调试命令");
-        String input = "meridian_debug re";
+        var revive = dispatcher.getRoot().getChild("meridian").getChild("body").getChild("revive");
+        context.assertTrue(!revive.canUse(source.withPermission(0)), "普通玩家可调用调试复活");
+        String input = "meridian body re";
         var literals = dispatcher.getCompletionSuggestions(dispatcher.parse(input, source)).join();
         context.assertTrue(literals.getList().stream().anyMatch(item -> item.getText().equals("revive")),
                 "revive 没有命令补全");
-        String targets = "meridian_debug revive @";
+        String targets = "meridian body revive @";
         var selectors = dispatcher.getCompletionSuggestions(dispatcher.parse(targets, source)).join();
         context.assertTrue(selectors.getList().stream().anyMatch(item -> item.getText().equals("@s")),
                 "revive 没有实体选择器补全");

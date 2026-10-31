@@ -6,6 +6,7 @@ import dev.kizuna.meridian.protocol.QiDensity;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.DebugQi;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.DebugQiMode;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.FailureCode;
+import java.util.OptionalDouble;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.LivingEntity;
 
@@ -25,12 +26,36 @@ final class DebugQiBridge {
         return submit(entity, request);
     }
 
+    static FailureCode set(LivingEntity entity, double amount, String meridianId, DebugCommands.QiAccount account,
+                           double density) {
+        // 带参数的覆盖：经脉 ID 为空表示全身，账户选内腔或外壁，数量与密度原样交给 Framework 校验。
+        DebugQi request = DebugQi.newBuilder()
+                .setMode(DebugQiMode.SET_INVENTORY)
+                .setMeridianId(meridianId)
+                .setWall(account == DebugCommands.QiAccount.WALL)
+                .setAmount(amount)
+                .setDensity(density)
+                .build();
+        return submit(entity, request);
+    }
+
     static FailureCode fill(LivingEntity entity) {
         // 省略经脉与数量即补满全部内腔。
         DebugQi request = DebugQi.newBuilder()
                 .setMode(DebugQiMode.FILL_LUMENS)
                 .build();
         return submit(entity, request);
+    }
+
+    static FailureCode fill(LivingEntity entity, String meridianId, OptionalDouble amount) {
+        // 经脉 ID 为空时补满全身内腔；指定经脉时只补该脉，带数量时补到该脉的这一总量。
+        DebugQi.Builder request = DebugQi.newBuilder()
+                .setMode(DebugQiMode.FILL_LUMENS)
+                .setMeridianId(meridianId);
+        if (amount.isPresent()) {
+            request.setAmount(amount.getAsDouble());
+        }
+        return submit(entity, request.build());
     }
 
     private static FailureCode submit(LivingEntity entity, DebugQi request) {
