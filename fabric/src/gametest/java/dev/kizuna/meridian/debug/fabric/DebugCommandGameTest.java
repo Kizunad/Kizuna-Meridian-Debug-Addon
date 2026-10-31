@@ -15,15 +15,14 @@ import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.CastRequest;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueFailure;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueReference;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.mob.VindicatorEntity;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.test.GameTest;
-import net.minecraft.test.TestContext;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
-
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.GameTest;
+import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.monster.Vindicator;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -55,18 +54,18 @@ public final class DebugCommandGameTest implements FabricGameTest {
     private static final String LEAP_LINE = "跃步 LEAP";
     private static final String EFFORT_MARK = "做功=";
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
-    public void techniqueCommandsDriveRealCastsLeapsAndForgetting(TestContext context) {
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void techniqueCommandsDriveRealCastsLeapsAndForgetting(GameTestHelper context) {
         // 学会后可施放；冷却中被拒且状态给出阶段与失败码；清冷却后立即可再施放；一次跃步一行日志；忘记后按未学拒绝。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
-        context.waitAndRun(JOIN_TICKS, () -> guarded(online, () -> learnAndCast(context, online)));
+        context.runAfterDelay(JOIN_TICKS, () -> guarded(online, () -> learnAndCast(context, online)));
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
-    public void bodyAndFatigueCommandsMatchTheHostBody(TestContext context) {
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void bodyAndFatigueCommandsMatchTheHostBody(GameTestHelper context) {
         // 摘要给出宿主快照里的境界与真元；按带冒号的标签设置疲劳后每块腿肌恰为该比例，清除后归零。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
-        context.waitAndRun(JOIN_TICKS, () -> {
+        context.runAfterDelay(JOIN_TICKS, () -> {
             try (online) {
                 var source = source(online);
                 assertBody(context, online, source);
@@ -76,15 +75,15 @@ public final class DebugCommandGameTest implements FabricGameTest {
                 assertCommand(context, source, "meridian_debug fatigue clear @s " + QUOTED_LEG_MUSCLE);
                 assertLegFatigue(context, online.player, 0);
             }
-            context.complete();
+            context.succeed();
         });
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
-    public void eachDebugCommandCompletesItsNextArgument(TestContext context) {
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void eachDebugCommandCompletesItsNextArgument(GameTestHelper context) {
         // 每条新命令至少一处原版补全：疲劳标签带引号、功法 ID 带命名空间、子命令与实体选择器。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
-        context.waitAndRun(JOIN_TICKS, () -> {
+        context.runAfterDelay(JOIN_TICKS, () -> {
             try (online) {
                 var source = source(online);
                 assertSuggests(context, source, "meridian_debug fatigue set @s ", QUOTED_LEG_MUSCLE);
@@ -97,44 +96,44 @@ public final class DebugCommandGameTest implements FabricGameTest {
                 assertSuggests(context, source, "meridian_debug body @", "@s");
                 assertSuggests(context, source, "meridian_debug qi set @", "@s");
             }
-            context.complete();
+            context.succeed();
         });
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
-    public void qiCommandsAcceptFreshTrueQiVindicators(TestContext context) {
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void qiCommandsAcceptFreshTrueQiVindicators(GameTestHelper context) {
         // 命令生成的真炁卫道士带着生成器残余与高密度主元；qi set 覆盖到半满、heal zhenyuan 补满都不越过内腔。
-        var source = context.getWorld().getServer().getCommandSource()
-                .withWorld(context.getWorld())
-                .withLevel(OP_LEVEL);
-        Vec3d position = Vec3d.ofBottomCenter(context.getAbsolutePos(new BlockPos(SPAWN_X, SPAWN_Y, SPAWN_Z)));
+        var source = context.getLevel().getServer().createCommandSourceStack()
+                .withLevel(context.getLevel())
+                .withPermission(OP_LEVEL);
+        Vec3 position = Vec3.atBottomCenterOf(context.absolutePos(new BlockPos(SPAWN_X, SPAWN_Y, SPAWN_Z)));
         String coordinates = String.format(Locale.ROOT, "%.2f %.2f %.2f", position.x, position.y, position.z);
         for (int index = 0; index < VINDICATOR_SAMPLES; index++) {
             assertCommand(context, source, "meridian humanoid summon vindicator true_qi " + coordinates);
-            VindicatorEntity vindicator = summoned(context, position);
+            Vindicator vindicator = summoned(context, position);
             try {
                 assertQiCommands(context, source, vindicator);
             } finally {
                 vindicator.discard();
             }
         }
-        context.complete();
+        context.succeed();
     }
 
-    private static void learnAndCast(TestContext context, DebugAddonGameTest.DebugTestPlayer online) {
+    private static void learnAndCast(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online) {
         // 开脉、补元和学卷都走命令；首次施放进入起手，状态显示 WARMUP。
-        Vec3d position = Vec3d.ofBottomCenter(context.getAbsolutePos(new BlockPos(PLAYER_X, PLAYER_Y, PLAYER_Z)));
-        online.player.refreshPositionAndAngles(position.x, position.y, position.z, 0, 0);
+        Vec3 position = Vec3.atBottomCenterOf(context.absolutePos(new BlockPos(PLAYER_X, PLAYER_Y, PLAYER_Z)));
+        online.player.moveTo(position.x, position.y, position.z, 0, 0);
         var source = source(online);
         assertCommand(context, source, "meridian opening complete @s all");
         assertCommand(context, source, "meridian_debug heal @s zhenyuan");
         assertCommand(context, source, "meridian_debug technique learn @s " + VOLUME);
         assertStarted(context, cast(online), "学会后无法施放");
         assertStatus(context, online, source, CastPhase.WARMUP.name());
-        context.waitAndRun(settleTicks(), () -> guarded(online, () -> clearCooldown(context, online)));
+        context.runAfterDelay(settleTicks(), () -> guarded(online, () -> clearCooldown(context, online)));
     }
 
-    private static void clearCooldown(TestContext context, DebugAddonGameTest.DebugTestPlayer online) {
+    private static void clearCooldown(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online) {
         // 收势后仍在冷却：施放被拒、状态给出失败码；清冷却后同一刻再次施放成功。
         var source = source(online);
         CastOutcome cooling = cast(online);
@@ -142,10 +141,10 @@ public final class DebugCommandGameTest implements FabricGameTest {
         assertStatus(context, online, source, TechniqueFailure.COOLING_DOWN.name());
         assertCommand(context, source, "meridian_debug technique cooldown clear @s");
         assertStarted(context, cast(online), "清除冷却后无法立即施放");
-        context.waitAndRun(settleTicks(), () -> guarded(online, () -> leapAndForget(context, online)));
+        context.runAfterDelay(settleTicks(), () -> guarded(online, () -> leapAndForget(context, online)));
     }
 
-    private static void leapAndForget(TestContext context, DebugAddonGameTest.DebugTestPlayer online) {
+    private static void leapAndForget(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online) {
         // 上一次施放留下轻身状态；一次跃步恰好一行观察日志；忘记后施放按未学拒绝。
         var source = source(online);
         assertCommand(context, source, "meridian_debug leap watch on");
@@ -163,7 +162,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         CastOutcome forgotten = cast(online);
         context.assertTrue(forgotten.getFailure() == TechniqueFailure.NOT_KNOWN, "忘记后没有按未学拒绝：" + forgotten);
         online.close();
-        context.complete();
+        context.succeed();
     }
 
     private static void guarded(DebugAddonGameTest.DebugTestPlayer online, Runnable stage) {
@@ -190,22 +189,22 @@ public final class DebugCommandGameTest implements FabricGameTest {
                 .setVersion(TECHNIQUE_VERSION)
                 .build();
         var request = CastRequest.newBuilder()
-                .setBodyId(online.player.getUuidAsString())
+                .setBodyId(online.player.getStringUUID())
                 .setTechnique(reference)
                 .setCastId(UUID.randomUUID().toString())
                 .build();
-        return TechniqueFabric.service().cast(online.player.getUuid(), request);
+        return TechniqueFabric.service().cast(online.player.getUUID(), request);
     }
 
-    private static void assertStarted(TestContext context, CastOutcome outcome, String message) {
+    private static void assertStarted(GameTestHelper context, CastOutcome outcome, String message) {
         // 成功施放没有失败码，并停在起手阶段。
         boolean started = outcome.getFailure() == TechniqueFailure.TECHNIQUE_FAILURE_UNSPECIFIED
                 && outcome.getPhase() == CastPhase.WARMUP;
         context.assertTrue(started, message + "：" + outcome);
     }
 
-    private static void assertStatus(TestContext context, DebugAddonGameTest.DebugTestPlayer online,
-                                     ServerCommandSource source, String expected) {
+    private static void assertStatus(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online,
+                                     CommandSourceStack source, String expected) {
         // 状态命令的回显就是管理员在聊天栏看到的文字。
         int before = online.chat().size();
         assertCommand(context, source, "meridian_debug technique status");
@@ -213,8 +212,8 @@ public final class DebugCommandGameTest implements FabricGameTest {
         context.assertTrue(status.contains(expected), "功法状态缺少 " + expected + "：" + status);
     }
 
-    private static void assertBody(TestContext context, DebugAddonGameTest.DebugTestPlayer online,
-                                   ServerCommandSource source) {
+    private static void assertBody(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online,
+                                   CommandSourceStack source) {
         // 摘要的境界取宿主快照的枚举名，真元行同时给出余额与容量。
         BodySnapshot body = DebugBodyAccess.inspect(online.player).orElseThrow();
         int before = online.chat().size();
@@ -224,7 +223,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         context.assertTrue(complete, "身体摘要缺少境界或真元：" + summary);
     }
 
-    private static void assertLegFatigue(TestContext context, LivingEntity entity, double ratio) {
+    private static void assertLegFatigue(GameTestHelper context, LivingEntity entity, double ratio) {
         // 逐块腿肌读取宿主快照，疲劳与容量之比必须等于命令给出的比例。
         BodySnapshot body = DebugBodyAccess.inspect(entity).orElseThrow();
         List<TissueDefinition> legs = DebugFatigue.select(body, LEG_MUSCLE);
@@ -237,33 +236,33 @@ public final class DebugCommandGameTest implements FabricGameTest {
         }
     }
 
-    private static void assertSuggests(TestContext context, ServerCommandSource source, String input,
+    private static void assertSuggests(GameTestHelper context, CommandSourceStack source, String input,
                                        String expected) {
         // 与客户端 Tab 相同，先按命令源解析再取原版补全。
-        var dispatcher = source.getServer().getCommandManager().getDispatcher();
+        var dispatcher = source.getServer().getCommands().getDispatcher();
         var suggestions = dispatcher.getCompletionSuggestions(dispatcher.parse(input, source)).join();
         boolean offered = suggestions.getList().stream().anyMatch(item -> item.getText().equals(expected));
         context.assertTrue(offered, "「" + input + "」没有补全 " + expected + "：" + suggestions.getList());
     }
 
-    private static VindicatorEntity summoned(TestContext context, Vec3d position) {
+    private static Vindicator summoned(GameTestHelper context, Vec3 position) {
         // 生成点只放这一只卫道士；上一只已在本轮 finally 中移除。
-        Box spot = new Box(BlockPos.ofFloored(position));
-        List<VindicatorEntity> found = context.getWorld().getEntitiesByClass(VindicatorEntity.class, spot,
+        AABB spot = new AABB(BlockPos.containing(position));
+        List<Vindicator> found = context.getLevel().getEntitiesOfClass(Vindicator.class, spot,
                 entity -> !entity.isRemoved());
         context.assertTrue(found.size() == 1, "summon 没有在指定位置恰好生成一只卫道士：" + found.size());
         return found.get(0);
     }
 
-    private static void assertQiCommands(TestContext context, ServerCommandSource source,
-                                         VindicatorEntity vindicator) {
+    private static void assertQiCommands(GameTestHelper context, CommandSourceStack source,
+                                         Vindicator vindicator) {
         // 覆盖量取全身内腔按游离密度折算的一半；补满后逐条经脉不越过定义上限。
         BodySnapshot initial = DebugBodyAccess.inspect(vindicator).orElseThrow();
         double totalVolume = initial.getStructure().getMeridiansList().stream()
                 .mapToDouble(MeridianDefinition::getLumenVolume)
                 .sum();
         String amount = String.format(Locale.ROOT, "%.6f", totalVolume * QiDensity.FREE * QI_SHARE);
-        String uuid = vindicator.getUuidAsString();
+        String uuid = vindicator.getStringUUID();
         assertCommand(context, source, "meridian_debug qi set " + uuid + " " + amount);
         double total = lumenTotal(DebugBodyAccess.inspect(vindicator).orElseThrow());
         context.assertTrue(Math.abs(total - Double.parseDouble(amount)) < TOLERANCE, "qi set 余额不符：" + total);
@@ -279,7 +278,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
                 .sum();
     }
 
-    private static void assertWithinLumens(TestContext context, BodySnapshot message) {
+    private static void assertWithinLumens(GameTestHelper context, BodySnapshot message) {
         // 用 Framework 领域对象折算占用体积，逐条经脉与定义上限比较。
         var body = BodyProtobuf.fromMessage(message);
         Map<Anatomy.MeridianId, Double> limits = body.structure().meridians().stream()
@@ -296,14 +295,14 @@ public final class DebugCommandGameTest implements FabricGameTest {
         return lines.subList(before, lines.size());
     }
 
-    private static ServerCommandSource source(DebugAddonGameTest.DebugTestPlayer online) {
+    private static CommandSourceStack source(DebugAddonGameTest.DebugTestPlayer online) {
         // 玩家自身作命令源，回显进入测试连接记录的聊天栏。
-        return online.player.getCommandSource().withLevel(OP_LEVEL);
+        return online.player.createCommandSourceStack().withPermission(OP_LEVEL);
     }
 
-    private static void assertCommand(TestContext context, ServerCommandSource source, String command) {
+    private static void assertCommand(GameTestHelper context, CommandSourceStack source, String command) {
         // 与聊天命令相同的执行入口；调试命令按成功目标数返回，这里每次只有一个目标。
-        int result = source.getServer().getCommandManager().executeWithPrefix(source, command);
+        int result = source.getServer().getCommands().performPrefixedCommand(source, command);
         context.assertTrue(result == 1, "命令没有成功：" + command + " -> " + result);
     }
 }

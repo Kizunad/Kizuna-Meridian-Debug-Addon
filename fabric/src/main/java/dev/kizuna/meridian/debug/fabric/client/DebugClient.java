@@ -10,11 +10,10 @@ import dev.kizuna.meridian.protocol.pb.BodyMessages.TissueState;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.text.Text;
-import net.minecraft.util.math.MathHelper;
-
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -51,7 +50,7 @@ public final class DebugClient implements ClientModInitializer {
                         client.execute(() -> state = LensState.NONE);
                         return;
                     }
-                    String targetName = buffer.readString(TARGET_NAME_LENGTH);
+                    String targetName = buffer.readUtf(TARGET_NAME_LENGTH);
                     boolean hasBody = buffer.readBoolean();
                     byte[] bodyBytes;
                     if (hasBody) {
@@ -76,9 +75,9 @@ public final class DebugClient implements ClientModInitializer {
         }
     }
 
-    private void render(DrawContext context) {
+    private void render(GuiGraphics context) {
         // 不手持透视镜时不渲染旧状态；服务端也不会继续发送新包。
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         if (client.player == null || !isHoldingLens(client)) {
             return;
         }
@@ -86,15 +85,15 @@ public final class DebugClient implements ClientModInitializer {
         if (current == LensState.NONE) {
             return;
         }
-        int x = client.getWindow().getScaledWidth() - PANEL_WIDTH - PANEL_X_MARGIN;
+        int x = client.getWindow().getGuiScaledWidth() - PANEL_WIDTH - PANEL_X_MARGIN;
         int y = PANEL_Y;
         BodySnapshot body = current.body();
         int height = panelHeight(body);
         context.fill(x, y, x + PANEL_WIDTH, y + height, PANEL_BACKGROUND);
-        context.drawTextWithShadow(client.textRenderer, Text.literal("透视：" + current.targetName()),
+        context.drawString(client.font, Component.literal("透视：" + current.targetName()),
                 x + PANEL_TEXT_X_OFFSET, y + HEADER_TEXT_Y_OFFSET, TEXT_COLOR);
         if (body == null) {
-            context.drawTextWithShadow(client.textRenderer, Text.literal("无身体"),
+            context.drawString(client.font, Component.literal("无身体"),
                     x + PANEL_TEXT_X_OFFSET, y + NO_BODY_TEXT_Y_OFFSET, WARNING_TEXT_COLOR);
             return;
         }
@@ -110,7 +109,7 @@ public final class DebugClient implements ClientModInitializer {
         return BASE_PANEL_HEIGHT + partLines * LINE_HEIGHT;
     }
 
-    private static void renderBody(DrawContext context, MinecraftClient client, BodySnapshot body, int x, int y) {
+    private static void renderBody(GuiGraphics context, Minecraft client, BodySnapshot body, int x, int y) {
         // 部位、总量、体力和真元均从同一份服务端快照计算。
         var structure = body.getStructure();
         var partStates = body.getPartStatesList();
@@ -135,15 +134,15 @@ public final class DebugClient implements ClientModInitializer {
         double qi = qi(body);
         int qiLine = drawValue(context, client, "真元", qi, qi, x, staminaLine);
         String status = status(body);
-        context.drawTextWithShadow(client.textRenderer, Text.literal("状态：" + status), x, qiLine,
+        context.drawString(client.font, Component.literal("状态：" + status), x, qiLine,
                 STATUS_TEXT_COLOR);
     }
 
-    private static int drawBar(DrawContext context, MinecraftClient client, String label,
+    private static int drawBar(GuiGraphics context, Minecraft client, String label,
                                double current, double maximum, int x, int y) {
         // 先画标签和数字，再按比例填充条形图，负值和超上限由 clamp 处理。
         String text = String.format(java.util.Locale.ROOT, "%s %.1f/%.1f", label, current, maximum);
-        context.drawTextWithShadow(client.textRenderer, Text.literal(text), x, y, TEXT_COLOR);
+        context.drawString(client.font, Component.literal(text), x, y, TEXT_COLOR);
         int barY = y + LINE_HEIGHT;
         context.fill(x, barY, x + BAR_WIDTH, barY + BAR_HEIGHT, BAR_BACKGROUND);
         double ratio;
@@ -152,16 +151,16 @@ public final class DebugClient implements ClientModInitializer {
         } else {
             ratio = 0;
         }
-        int filled = MathHelper.clamp((int) Math.round(ratio * BAR_WIDTH), 0, BAR_WIDTH);
+        int filled = Mth.clamp((int) Math.round(ratio * BAR_WIDTH), 0, BAR_WIDTH);
         context.fill(x, barY, x + filled, barY + BAR_HEIGHT, BAR_FOREGROUND);
         return barY + BAR_HEIGHT + LINE_HEIGHT;
     }
 
-    private static int drawValue(DrawContext context, MinecraftClient client, String label,
+    private static int drawValue(GuiGraphics context, Minecraft client, String label,
                                  double current, double maximum, int x, int y) {
         // 汇总值使用和部位相同的数字精度，方便与聊天快照对照。
         String text = String.format(java.util.Locale.ROOT, "%s %.1f/%.1f", label, current, maximum);
-        context.drawTextWithShadow(client.textRenderer, Text.literal(text), x, y, TEXT_COLOR);
+        context.drawString(client.font, Component.literal(text), x, y, TEXT_COLOR);
         return y + LINE_HEIGHT;
     }
 
@@ -219,12 +218,12 @@ public final class DebugClient implements ClientModInitializer {
         return "正常";
     }
 
-    private static boolean isHoldingLens(MinecraftClient client) {
+    private static boolean isHoldingLens(Minecraft client) {
         // 客户端只决定是否显示，目标和数据仍由服务端包提供。
-        return client.player.getMainHandStack().isOf(net.minecraft.registry.Registries.ITEM
-                .get(new net.minecraft.util.Identifier("meridian_debug", "limb_lens")))
-                || client.player.getOffHandStack().isOf(net.minecraft.registry.Registries.ITEM
-                .get(new net.minecraft.util.Identifier("meridian_debug", "limb_lens")));
+        return client.player.getMainHandItem().is(net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .get(new net.minecraft.resources.ResourceLocation("meridian_debug", "limb_lens")))
+                || client.player.getOffhandItem().is(net.minecraft.core.registries.BuiltInRegistries.ITEM
+                .get(new net.minecraft.resources.ResourceLocation("meridian_debug", "limb_lens")));
     }
 
     private record LensState(String targetName, BodySnapshot body) {

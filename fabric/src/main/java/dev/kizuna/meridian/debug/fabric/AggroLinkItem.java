@@ -1,50 +1,50 @@
 package dev.kizuna.meridian.debug.fabric;
 
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.mob.MobEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Hand;
-import net.minecraft.util.TypedActionResult;
-import net.minecraft.world.World;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.InteractionResultHolder;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 
 /** 仇恨牵引器的实体选择和模式切换入口。 */
 final class AggroLinkItem extends Item {
-    AggroLinkItem(Settings settings) {
+    AggroLinkItem(Properties settings) {
         super(settings);
     }
 
     @Override
-    public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
+    public InteractionResult interactLivingEntity(ItemStack stack, Player user, LivingEntity entity, InteractionHand hand) {
         // 客户端只保留原版交互反馈，选择状态和仇恨覆盖由服务端保存。
-        if (user.getWorld().isClient) {
-            return ActionResult.SUCCESS;
+        if (user.level().isClientSide) {
+            return InteractionResult.SUCCESS;
         }
-        if (user instanceof ServerPlayerEntity player) {
+        if (user instanceof ServerPlayer player) {
             handleEntity(player, entity);
         }
-        return ActionResult.SUCCESS;
+        return InteractionResult.SUCCESS;
     }
 
     @Override
-    public TypedActionResult<ItemStack> use(World world, PlayerEntity user, Hand hand) {
+    public InteractionResultHolder<ItemStack> use(Level world, Player user, InteractionHand hand) {
         // 右键空气取消当前选择，避免把半完成的调试状态留在玩家身上。
-        if (!world.isClient && user instanceof ServerPlayerEntity player) {
+        if (!world.isClientSide && user instanceof ServerPlayer player) {
             DebugFabric.cancelAggroSelection(player);
         }
-        return TypedActionResult.success(user.getStackInHand(hand), world.isClient /* clientSide */);
+        return InteractionResultHolder.sidedSuccess(user.getItemInHand(hand), world.isClientSide /* clientSide */);
     }
 
-    private static void handleEntity(ServerPlayerEntity player, LivingEntity entity) {
-        if (entity instanceof PlayerEntity) {
+    private static void handleEntity(ServerPlayer player, LivingEntity entity) {
+        if (entity instanceof Player) {
             send(player, "不能对玩家使用");
             return;
         }
-        if (!(entity instanceof MobEntity mob)) {
+        if (!(entity instanceof Mob mob)) {
             send(player, "目标不是可攻击生物");
             return;
         }
@@ -55,7 +55,7 @@ final class AggroLinkItem extends Item {
         DebugFabric.useAggroTarget(player, mob);
     }
 
-    private static void send(ServerPlayerEntity player, String message) {
-        player.sendMessage(Text.literal(message), true /* overlay */);
+    private static void send(ServerPlayer player, String message) {
+        player.displayClientMessage(Component.literal(message), true /* overlay */);
     }
 }

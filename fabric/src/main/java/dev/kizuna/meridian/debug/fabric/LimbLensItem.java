@@ -1,41 +1,40 @@
 package dev.kizuna.meridian.debug.fabric;
 
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.ItemUsageContext;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Hand;
-import net.minecraft.util.TypedActionResult;
-import net.minecraft.world.World;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.InteractionResultHolder;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 
 /** 肢体透视镜的右键入口；实际快照查询由服务端调试入口统一执行。 */
 final class LimbLensItem extends Item {
-    LimbLensItem(Settings settings) {
+    LimbLensItem(Properties settings) {
         super(settings);
     }
 
     @Override
-    public ActionResult useOnEntity(ItemStack stack, PlayerEntity user, LivingEntity entity, Hand hand) {
+    public InteractionResult interactLivingEntity(ItemStack stack, Player user, LivingEntity entity, InteractionHand hand) {
         // 客户端只播放原版交互；权限、目标和身体读取全部在服务端完成。
-        if (user.getWorld().isClient) {
-            return ActionResult.SUCCESS;
+        if (user.level().isClientSide) {
+            return InteractionResult.SUCCESS;
         }
-        if (user instanceof net.minecraft.server.network.ServerPlayerEntity player) {
-            LivingEntity target = player.isSneaking() ? player : entity;
+        if (user instanceof net.minecraft.server.level.ServerPlayer player) {
+            LivingEntity target = player.isShiftKeyDown() ? player : entity;
             DebugFabric.printSnapshot(player, target);
         }
-        return ActionResult.SUCCESS;
+        return InteractionResult.SUCCESS;
     }
 
     @Override
-    public TypedActionResult<ItemStack> use(World world, PlayerEntity user, Hand hand) {
+    public InteractionResultHolder<ItemStack> use(Level world, Player user, InteractionHand hand) {
         // 潜行右键空中查看自己；非潜行空挥不创建额外查询。
-        if (!world.isClient && user instanceof net.minecraft.server.network.ServerPlayerEntity player
-                && player.isSneaking()) {
+        if (!world.isClientSide && user instanceof net.minecraft.server.level.ServerPlayer player
+                && player.isShiftKeyDown()) {
             DebugFabric.printSnapshot(player, player);
         }
-        return TypedActionResult.success(user.getStackInHand(hand), world.isClient);
+        return InteractionResultHolder.sidedSuccess(user.getItemInHand(hand), world.isClientSide);
     }
 }

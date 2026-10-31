@@ -8,7 +8,7 @@ repositories {
 
 dependencies {
     minecraft libs.minecraft
-    mappings "net.fabricmc:yarn:${libs.versions.yarn.get()}:v2"
+    mappings loom.officialMojangMappings()
     modImplementation libs.fabric.loader
     modImplementation libs.fabric.api
     implementation project(':server')
@@ -33,15 +33,6 @@ processResources {
     inputs.property 'version', project.version
     filesMatching('fabric.mod.json') { expand version: project.version }
     from(project(':shared').sourceSets.main.resources)
-}
-
-// Loom 只按坐标复用 modprocessing 里的嵌套 JAR，SNAPSHOT 坐标不变时会把旧 server JAR 打进发布 JAR；
-// 每次打发布 JAR 前清掉该缓存，让 include 的 JAR 按当前产物重新生成。
-def clearNestedJarCache = tasks.register('clearNestedJarCache', Delete) {
-    delete layout.buildDirectory.dir('loom-cache/temp/modprocessing')
-}
-tasks.named('remapJar') {
-    dependsOn clearNestedJarCache
 }
 
 apply from: new File(kizunaWorkspace.directory('framework'), 'scripts/full-assembly.gradle')

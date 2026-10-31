@@ -1,13 +1,12 @@
 package dev.kizuna.meridian.debug.fabric;
 
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
-
 import java.util.Comparator;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 /** 服务端准星实体选择，限制在当前视线和已加载实体内。 */
 final class DebugTargeting {
@@ -18,32 +17,32 @@ final class DebugTargeting {
         // 目标选择只依赖当前玩家视线，不保留跨 tick 的实体引用。
     }
 
-    static LivingEntity entity(ServerPlayerEntity player) {
+    static LivingEntity entity(ServerPlayer player) {
         // 方块命中先截断实体射线，避免透过墙读取远处身体。
-        Vec3d start = player.getCameraPosVec(1.0F);
-        Vec3d direction = player.getRotationVec(1.0F);
-        Vec3d fullEnd = start.add(direction.multiply(MAX_RAY_DISTANCE));
-        HitResult blockHit = player.raycast(MAX_RAY_DISTANCE, 1.0F, false /* includeFluids */);
-        Vec3d lineEnd;
+        Vec3 start = player.getEyePosition(1.0F);
+        Vec3 direction = player.getViewVector(1.0F);
+        Vec3 fullEnd = start.add(direction.scale(MAX_RAY_DISTANCE));
+        HitResult blockHit = player.pick(MAX_RAY_DISTANCE, 1.0F, false /* includeFluids */);
+        Vec3 lineEnd;
         if (blockHit.getType() != HitResult.Type.MISS) {
-            lineEnd = blockHit.getPos();
+            lineEnd = blockHit.getLocation();
         } else {
             lineEnd = fullEnd;
         }
-        Box search = player.getBoundingBox().stretch(direction.multiply(MAX_RAY_DISTANCE)).expand(RAY_MARGIN);
-        return player.getWorld().getOtherEntities(player, search, candidate -> canTarget(candidate, start, lineEnd))
+        AABB search = player.getBoundingBox().expandTowards(direction.scale(MAX_RAY_DISTANCE)).inflate(RAY_MARGIN);
+        return player.level().getEntities(player, search, candidate -> canTarget(candidate, start, lineEnd))
                 .stream()
                 .filter(candidate -> candidate instanceof LivingEntity)
                 .map(candidate -> (LivingEntity) candidate)
-                .min(Comparator.comparingDouble(candidate -> candidate.squaredDistanceTo(start)))
+                .min(Comparator.comparingDouble(candidate -> candidate.distanceToSqr(start)))
                 .orElse(null);
     }
 
-    private static boolean canTarget(Entity candidate, Vec3d start, Vec3d end) {
+    private static boolean canTarget(Entity candidate, Vec3 start, Vec3 end) {
         // 只接受实体碰撞箱确实穿过准星线的活体，避免扫描到视线旁的目标。
         if (!(candidate instanceof LivingEntity living) || living.isRemoved() || !living.isAlive()) {
             return false;
         }
-        return living.getBoundingBox().expand(RAY_MARGIN).raycast(start, end).isPresent();
+        return living.getBoundingBox().inflate(RAY_MARGIN).clip(start, end).isPresent();
     }
 }

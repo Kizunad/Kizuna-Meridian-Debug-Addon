@@ -9,8 +9,7 @@ import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.RequestEnvelope;
 import dev.kizuna.meridian.server.BodyHealthHost;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.entity.LivingEntity;
-
+import net.minecraft.world.entity.LivingEntity;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,7 +29,7 @@ final class DebugBodyAccess {
 
     static Optional<BodySnapshot> inspect(LivingEntity entity) {
         // 未被任何宿主认领的实体返回空值，已认领宿主的拒绝不能换用另一份身体。
-        String subjectId = entity.getUuidAsString();
+        String subjectId = entity.getStringUUID();
         String requestId = UUID.randomUUID().toString();
         HealthHostRequest request = HealthHostRequest.newBuilder()
                 .setProtocolVersion(1)
@@ -56,7 +55,7 @@ final class DebugBodyAccess {
         HealthHostRequest request = HealthHostRequest.newBuilder()
                 .setProtocolVersion(1)
                 .setRequestId(requestId)
-                .setSubjectId(entity.getUuidAsString())
+                .setSubjectId(entity.getStringUUID())
                 .setEffect(envelope)
                 .build();
         for (BodyHealthHost host : hosts) {
@@ -85,7 +84,7 @@ final class DebugBodyAccess {
         HealthHostRequest request = HealthHostRequest.newBuilder()
                 .setProtocolVersion(1)
                 .setRequestId(requestId)
-                .setSubjectId(entity.getUuidAsString())
+                .setSubjectId(entity.getStringUUID())
                 .setExertion(envelope)
                 .build();
         for (BodyHealthHost host : hosts) {

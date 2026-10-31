@@ -1,13 +1,12 @@
 package dev.kizuna.meridian.debug.fabric;
 
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.attribute.EntityAttributeInstance;
-import net.minecraft.entity.attribute.EntityAttributes;
-import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
-
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -31,8 +30,8 @@ final class AggroLinkRegistry {
         Iterator<Map.Entry<UUID, AggroLink>> iterator = links.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<UUID, AggroLink> entry = iterator.next();
-            MobEntity source = findMob(server, entry.getKey());
-            MobEntity target = findMob(server, entry.getValue().targetId());
+            Mob source = findMob(server, entry.getKey());
+            Mob target = findMob(server, entry.getValue().targetId());
             if (!isValidLink(source, target)) {
                 if (source != null) {
                     source.setTarget(null);
@@ -44,21 +43,21 @@ final class AggroLinkRegistry {
         }
     }
 
-    static boolean canAttack(MobEntity mob) {
-        EntityAttributeInstance attackDamage =
-                mob.getAttributeInstance(EntityAttributes.GENERIC_ATTACK_DAMAGE);
+    static boolean canAttack(Mob mob) {
+        AttributeInstance attackDamage =
+                mob.getAttribute(Attributes.ATTACK_DAMAGE);
         if (attackDamage == null) {
             return false;
         }
         return attackDamage.getValue() > 0;
     }
 
-    Optional<MobEntity> selected(ServerPlayerEntity player) {
-        Selection selection = selections.get(player.getUuid());
+    Optional<Mob> selected(ServerPlayer player) {
+        Selection selection = selections.get(player.getUUID());
         if (selection == null) {
             return Optional.empty();
         }
-        MobEntity mob = findMob(player.getServer(), selection.mobId());
+        Mob mob = findMob(player.getServer(), selection.mobId());
         if (mob == null || !mob.isAlive()) {
             clearSelection(player);
             return Optional.empty();
@@ -66,9 +65,9 @@ final class AggroLinkRegistry {
         return Optional.of(mob);
     }
 
-    void select(ServerPlayerEntity player, MobEntity mob) {
+    void select(ServerPlayer player, Mob mob) {
         clearSelection(player);
-        UUID mobId = mob.getUuid();
+        UUID mobId = mob.getUUID();
         Integer selectedCount = glowSelections.get(mobId);
         int nextCount;
         if (selectedCount == null) {
@@ -78,15 +77,15 @@ final class AggroLinkRegistry {
         }
         glowSelections.put(mobId, nextCount);
         if (nextCount == 1) {
-            originalGlow.put(mobId, mob.isGlowing());
+            originalGlow.put(mobId, mob.isCurrentlyGlowing());
         }
-        mob.setGlowing(true /* glowing */);
-        selections.put(player.getUuid(), new Selection(mobId));
+        mob.setGlowingTag(true /* glowing */);
+        selections.put(player.getUUID(), new Selection(mobId));
     }
 
-    void link(MinecraftServer server, MobEntity source, MobEntity target, AggroLinkMode mode) {
-        UUID sourceId = source.getUuid();
-        UUID targetId = target.getUuid();
+    void link(MinecraftServer server, Mob source, Mob target, AggroLinkMode mode) {
+        UUID sourceId = source.getUUID();
+        UUID targetId = target.getUUID();
         Set<UUID> affected = Set.of(sourceId, targetId);
         clearLinksInvolving(server, affected);
         source.setTarget(target);
@@ -97,8 +96,8 @@ final class AggroLinkRegistry {
         }
     }
 
-    void clearSelection(ServerPlayerEntity player) {
-        Selection selection = selections.remove(player.getUuid());
+    void clearSelection(ServerPlayer player) {
+        Selection selection = selections.remove(player.getUUID());
         if (selection == null) {
             return;
         }
@@ -107,9 +106,9 @@ final class AggroLinkRegistry {
         if (remaining != null && remaining <= 0) {
             glowSelections.remove(mobId);
             Boolean wasGlowing = originalGlow.remove(mobId);
-            MobEntity mob = findMob(player.getServer(), mobId);
+            Mob mob = findMob(player.getServer(), mobId);
             if (mob != null && wasGlowing != null) {
-                mob.setGlowing(wasGlowing /* glowing */);
+                mob.setGlowingTag(wasGlowing /* glowing */);
             }
         }
     }
@@ -117,7 +116,7 @@ final class AggroLinkRegistry {
     int clearAll(MinecraftServer server) {
         int removed = 0;
         for (UUID sourceId : links.keySet()) {
-            MobEntity source = findMob(server, sourceId);
+            Mob source = findMob(server, sourceId);
             if (source != null) {
                 source.setTarget(null);
             }
@@ -130,12 +129,12 @@ final class AggroLinkRegistry {
     int clearTargets(MinecraftServer server, Collection<? extends Entity> targets) {
         Set<UUID> targetIds = new HashSet<>();
         for (Entity target : targets) {
-            targetIds.add(target.getUuid());
+            targetIds.add(target.getUUID());
         }
         return clearLinksInvolving(server, targetIds);
     }
 
-    void clearPlayer(ServerPlayerEntity player) {
+    void clearPlayer(ServerPlayer player) {
         clearSelection(player);
     }
 
@@ -156,7 +155,7 @@ final class AggroLinkRegistry {
             if (!entityIds.contains(sourceId) && !entityIds.contains(targetId)) {
                 continue;
             }
-            MobEntity source = findMob(server, sourceId);
+            Mob source = findMob(server, sourceId);
             if (source != null) {
                 source.setTarget(null);
             }
@@ -166,23 +165,23 @@ final class AggroLinkRegistry {
         return removed;
     }
 
-    private static boolean isValidLink(MobEntity source, MobEntity target) {
+    private static boolean isValidLink(Mob source, Mob target) {
         if (source == null || target == null || source == target) {
             return false;
         }
         if (!source.isAlive() || !target.isAlive()) {
             return false;
         }
-        if (source.getWorld() != target.getWorld()) {
+        if (source.level() != target.level()) {
             return false;
         }
-        return source.squaredDistanceTo(target) <= MAX_DISTANCE_SQUARED;
+        return source.distanceToSqr(target) <= MAX_DISTANCE_SQUARED;
     }
 
-    private static MobEntity findMob(MinecraftServer server, UUID id) {
-        for (ServerWorld world : server.getWorlds()) {
+    private static Mob findMob(MinecraftServer server, UUID id) {
+        for (ServerLevel world : server.getAllLevels()) {
             Entity entity = world.getEntity(id);
-            if (entity instanceof MobEntity mob) {
+            if (entity instanceof Mob mob) {
                 return mob;
             }
         }

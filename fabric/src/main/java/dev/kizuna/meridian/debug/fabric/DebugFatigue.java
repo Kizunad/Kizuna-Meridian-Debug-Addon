@@ -11,12 +11,11 @@ import dev.kizuna.meridian.protocol.pb.HealthMessages.RestoreFatigue;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.ExertTissue;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.ExertTissues;
-import net.minecraft.entity.LivingEntity;
-
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import net.minecraft.world.entity.LivingEntity;
 
 /** 疲劳命令的选择、恢复和做功计划；最终数值仍由 Framework 计算。 */
 final class DebugFatigue {

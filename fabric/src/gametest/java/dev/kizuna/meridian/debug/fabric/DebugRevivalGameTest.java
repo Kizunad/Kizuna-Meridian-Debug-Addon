@@ -4,12 +4,12 @@ import dev.kizuna.meridian.human.server.HumanRevival;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.ConfirmBodyDeath;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
-import net.minecraft.entity.EntityType;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.mob.MobEntity;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.test.GameTest;
-import net.minecraft.test.TestContext;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.gametest.framework.GameTest;
+import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 
 /** 调试复活经过真实命令树、原版补全和唯一身体健康事务。 */
 public final class DebugRevivalGameTest implements FabricGameTest {
@@ -18,12 +18,12 @@ public final class DebugRevivalGameTest implements FabricGameTest {
     private static final int DEATH_OBSERVATION_TICKS = 3;
     private static final float LETHAL_DAMAGE = 1000000;
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
-    public void reviveCommandSupportsSelfTargetsCompletionAndRejectsLivingBody(TestContext context) {
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void reviveCommandSupportsSelfTargetsCompletionAndRejectsLivingBody(GameTestHelper context) {
         // 自身和显式选择器共用一年费用；活体重复调用不能变成免费治疗或重复扣费。
         try (var online = new DebugAddonGameTest.DebugTestPlayer(context)) {
             var player = online.player;
-            var source = player.getCommandSource().withLevel(OP_LEVEL);
+            var source = player.createCommandSourceStack().withPermission(OP_LEVEL);
             double cost = HumanRevival.request("debug_test:revival").getLifespanSeconds();
             double spent = DebugBodyAccess.inspect(player).orElseThrow().getVitality().getSpentLifespanSeconds();
             confirmDeath(player);
@@ -36,22 +36,22 @@ public final class DebugRevivalGameTest implements FabricGameTest {
             assertSpent(context, player, spent + cost + cost);
             verifyCommandTree(context, source);
         }
-        context.complete();
+        context.succeed();
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE)
-    public void deadVindicatorStaysDeadWithoutAutomaticLifespanCharge(TestContext context) {
+    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    public void deadVindicatorStaysDeadWithoutAutomaticLifespanCharge(GameTestHelper context) {
         // 类人实体只走死亡清账，玩家重生回调不能替它自动复活。
-        var vindicator = context.spawnEntity(EntityType.VINDICATOR, 1, SPAWN_HEIGHT, 1);
-        ((MobEntity) vindicator).setAiDisabled(true /* aiDisabled */);
+        var vindicator = context.spawn(EntityType.VINDICATOR, 1, SPAWN_HEIGHT, 1);
+        ((Mob) vindicator).setNoAi(true /* aiDisabled */);
         var before = DebugBodyAccess.inspect(vindicator).orElseThrow();
-        vindicator.damage(vindicator.getDamageSources().genericKill(), LETHAL_DAMAGE);
-        context.waitAndRun(DEATH_OBSERVATION_TICKS, () -> {
+        vindicator.hurt(vindicator.damageSources().genericKill(), LETHAL_DAMAGE);
+        context.runAfterDelay(DEATH_OBSERVATION_TICKS, () -> {
             var after = DebugBodyAccess.inspect(vindicator).orElseThrow();
             context.assertTrue(after.getVitality().getDead() && !vindicator.isAlive(), "卫道士死亡后自动复活");
             context.assertTrue(after.getVitality().getSpentLifespanSeconds()
                     == before.getVitality().getSpentLifespanSeconds(), "卫道士死亡被扣复活寿元");
-            context.complete();
+            context.succeed();
         });
     }
 
@@ -63,18 +63,18 @@ public final class DebugRevivalGameTest implements FabricGameTest {
         DebugBodyAccess.submit(entity, body, command).orElseThrow();
     }
 
-    private static void assertSpent(TestContext context, LivingEntity entity, double expected) {
+    private static void assertSpent(GameTestHelper context, LivingEntity entity, double expected) {
         // 费用和存活状态读取真实宿主，不从命令反馈文字推断成功。
         var body = DebugBodyAccess.inspect(entity).orElseThrow();
         context.assertTrue(!body.getVitality().getDead(), "调试复活没有清除死态");
         context.assertTrue(body.getVitality().getSpentLifespanSeconds() == expected, "调试复活寿元扣减不一致");
     }
 
-    private static void verifyCommandTree(TestContext context, ServerCommandSource source) {
+    private static void verifyCommandTree(GameTestHelper context, CommandSourceStack source) {
         // 检查真实根节点权限和 revive literal，再请求原版实体参数补全。
-        var dispatcher = source.getServer().getCommandManager().getDispatcher();
+        var dispatcher = source.getServer().getCommands().getDispatcher();
         var root = dispatcher.getRoot().getChild("meridian_debug");
-        context.assertTrue(!root.canUse(source.withLevel(0)), "普通玩家可调用调试命令");
+        context.assertTrue(!root.canUse(source.withPermission(0)), "普通玩家可调用调试命令");
         String input = "meridian_debug re";
         var literals = dispatcher.getCompletionSuggestions(dispatcher.parse(input, source)).join();
         context.assertTrue(literals.getList().stream().anyMatch(item -> item.getText().equals("revive")),
@@ -85,8 +85,8 @@ public final class DebugRevivalGameTest implements FabricGameTest {
                 "revive 没有实体选择器补全");
     }
 
-    private static int command(ServerCommandSource source, String text) {
+    private static int command(CommandSourceStack source, String text) {
         // 与聊天命令相同的执行入口，返回成功目标数量。
-        return source.getServer().getCommandManager().executeWithPrefix(source, text);
+        return source.getServer().getCommands().performPrefixedCommand(source, text);
     }
 }

@@ -6,8 +6,8 @@ import dev.kizuna.meridian.protocol.QiDensity;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.DebugQi;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.DebugQiMode;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.FailureCode;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.LivingEntity;
 
 /** 真元调试请求交给目标所属宿主的公开调试入口：玩家归 Human，类人归 Threatening。 */
 final class DebugQiBridge {
@@ -35,7 +35,7 @@ final class DebugQiBridge {
 
     private static FailureCode submit(LivingEntity entity, DebugQi request) {
         // 权限已在命令层检查；未被认领的实体由类人宿主按无身体拒绝。
-        if (entity instanceof ServerPlayerEntity player) {
+        if (entity instanceof ServerPlayer player) {
             return HumanDebugHost.debugQi(player, request);
         }
         return HumanoidHealthHost.debugQi(entity, request);

@@ -1,15 +1,14 @@
 package dev.kizuna.meridian.debug.fabric;
 
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
-import net.minecraft.entity.EntityType;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.mob.MobEntity;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.test.GameTest;
-import net.minecraft.test.TestContext;
-
 import java.util.List;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.gametest.framework.GameTest;
+import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.phys.Vec3;
 
 /** 新调试命令的最小真实宿主回归。 */
 public final class DebugToolsGameTest {
@@ -20,13 +19,13 @@ public final class DebugToolsGameTest {
     private static final double TEST_QI_AMOUNT = 0.01;
     private static final double RATIO_TOLERANCE = 0.000001;
 
-    @GameTest(templateName = net.fabricmc.fabric.api.gametest.v1.FabricGameTest.EMPTY_STRUCTURE)
-    public void fatigueAndQiUseAuthoritativeHumanoidHost(TestContext context) {
-        LivingEntity villager = context.spawnEntity(EntityType.VILLAGER, SPAWN_X, SPAWN_Y, SPAWN_Z);
+    @GameTest(template = net.fabricmc.fabric.api.gametest.v1.FabricGameTest.EMPTY_STRUCTURE)
+    public void fatigueAndQiUseAuthoritativeHumanoidHost(GameTestHelper context) {
+        LivingEntity villager = context.spawn(EntityType.VILLAGER, SPAWN_X, SPAWN_Y, SPAWN_Z);
         disableAi(villager);
         BodySnapshot initial = DebugBodyAccess.inspect(villager).orElseThrow();
         String tissueId = initial.getStructure().getTissues(0).getId();
-        ServerCommandSource source = source(context, villager);
+        CommandSourceStack source = source(context, villager);
 
         int set = DebugFabric.setFatigue(source, List.of(villager), tissueId, 0.5);
         BodySnapshot fatigued = DebugBodyAccess.inspect(villager).orElseThrow();
@@ -48,15 +47,15 @@ public final class DebugToolsGameTest {
                 .sum();
         context.assertTrue(qi == 1 && Math.abs(totalQi - TEST_QI_AMOUNT) < RATIO_TOLERANCE,
                 "qi set 没有写入精确余额：" + totalQi);
-        context.complete();
+        context.succeed();
     }
 
-    @GameTest(templateName = net.fabricmc.fabric.api.gametest.v1.FabricGameTest.EMPTY_STRUCTURE)
-    public void qiSetUsesHumanDebugAuthorization(TestContext context) {
+    @GameTest(template = net.fabricmc.fabric.api.gametest.v1.FabricGameTest.EMPTY_STRUCTURE)
+    public void qiSetUsesHumanDebugAuthorization(GameTestHelper context) {
         DebugAddonGameTest.DebugTestPlayer online = new DebugAddonGameTest.DebugTestPlayer(context);
-        context.waitAndRun(2, () -> {
+        context.runAfterDelay(2, () -> {
             try (online) {
-                ServerCommandSource source = source(context, online.player);
+                CommandSourceStack source = source(context, online.player);
                 int result = DebugFabric.setQi(source, List.of(online.player), TEST_QI_AMOUNT);
                 BodySnapshot body = DebugBodyAccess.inspect(online.player).orElseThrow();
                 double totalQi = body.getMeridianStatesList().stream()
@@ -65,21 +64,21 @@ public final class DebugToolsGameTest {
                         .sum();
                 context.assertTrue(result == 1 && Math.abs(totalQi - TEST_QI_AMOUNT) < RATIO_TOLERANCE,
                         "玩家 qi set 没有写入精确余额：" + totalQi);
-                context.complete();
+                context.succeed();
             }
         });
     }
 
-    private static ServerCommandSource source(TestContext context, LivingEntity entity) {
-        return context.getWorld().getServer().getCommandSource()
-                .withWorld(context.getWorld())
-                .withPosition(Vec3d.ofCenter(entity.getBlockPos()))
-                .withLevel(COMMAND_PERMISSION_LEVEL);
+    private static CommandSourceStack source(GameTestHelper context, LivingEntity entity) {
+        return context.getLevel().getServer().createCommandSourceStack()
+                .withLevel(context.getLevel())
+                .withPosition(Vec3.atCenterOf(entity.blockPosition()))
+                .withPermission(COMMAND_PERMISSION_LEVEL);
     }
 
     private static void disableAi(LivingEntity entity) {
-        if (entity instanceof MobEntity mob) {
-            mob.setAiDisabled(true /* aiDisabled */);
+        if (entity instanceof Mob mob) {
+            mob.setNoAi(true /* aiDisabled */);
         }
     }
 }
