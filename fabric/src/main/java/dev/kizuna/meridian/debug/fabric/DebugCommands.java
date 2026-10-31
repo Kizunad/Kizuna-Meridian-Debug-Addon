@@ -24,7 +24,7 @@ import java.util.function.Function;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
-import net.minecraft.commands.arguments.ResourceLocationArgument;
+import net.minecraft.commands.arguments.IdentifierArgument;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 
@@ -141,7 +141,7 @@ final class DebugCommands {
     private static void forget(LiteralArgumentBuilder<CommandSourceStack> forget) {
         // 功法 ID 按原版标识符读取，补全列出目录里的书、卷与式。
         MeridianCommands.optionalEntities(forget, (parent, targets) -> parent
-                .then(Commands.argument("id", ResourceLocationArgument.id())
+                .then(Commands.argument("id", IdentifierArgument.id())
                         .suggests(DebugCommands::suggestTechniqueIds)
                         .executes(context -> DebugFabric.forgetTechnique(context.getSource(),
                                 targets.resolve(context), techniqueId(context)))));
@@ -237,7 +237,7 @@ final class DebugCommands {
 
     private static String techniqueId(CommandContext<CommandSourceStack> context) {
         // 功法、卷册和书都用带命名空间的 ID，按原版标识符参数读取冒号。
-        return ResourceLocationArgument.getId(context, "id").toString();
+        return IdentifierArgument.getId(context, "id").toString();
     }
 
     private static CompletableFuture<Suggestions> suggestFromBodies(

@@ -8,13 +8,12 @@ import dev.kizuna.meridian.protocol.pb.HealthMessages.DamageKind;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
 import dev.kizuna.meridian.vanilla.DamagePreferences;
 import dev.kizuna.meridian.vanilla.fabric.VanillaDamageFabric;
-import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.gametest.framework.GameTest;
+import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
@@ -22,8 +21,10 @@ import net.minecraft.world.item.Items;
 import java.util.ArrayList;
 import java.util.List;
 
+import static dev.kizuna.meridian.debug.fabric.DebugGameTestTicks.DEFAULT_TIMEOUT;
+
 /** 完整装配中的部位蔓延、单次事务、护甲边界和实体死亡同步。 */
-public final class DamageSpilloverGameTest implements FabricGameTest {
+public final class DamageSpilloverGameTest {
     private static final String ARM = "left_upper_arm";
     private static final int SPAWN_COORDINATE = 2;
     private static final int LOGIN_TICKS = 61;
@@ -35,7 +36,7 @@ public final class DamageSpilloverGameTest implements FabricGameTest {
     private static final List<VanillaDamageFabric.DamageEvent> EVENTS = new ArrayList<>();
     private static boolean observerInstalled;
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void vindicatorDestroyedArmSpreadsToEveryLivingPart(GameTestHelper context) {
         // 两次真实原版伤害连续命中同一手臂，脚部护甲不能再次抵扣接收剂量。
         try (var online = new DebugAddonGameTest.DebugTestPlayer(context)) {
@@ -45,7 +46,7 @@ public final class DamageSpilloverGameTest implements FabricGameTest {
         }
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void playerDestroyedArmUsesTheSameTemplateRule(GameTestHelper context) {
         // 真实登录绑定玩家身体，等待登录免伤结束后走相同伤害入口。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
@@ -59,7 +60,7 @@ public final class DamageSpilloverGameTest implements FabricGameTest {
         });
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void spilloverDestroysHeadAndSynchronizesVanillaDeath(GameTestHelper context) {
         // 先通过可信事务留下少量头部 HP，再由黑臂蔓延触发原有死亡条件。
         LivingEntity target = vindicator(context);
@@ -77,7 +78,7 @@ public final class DamageSpilloverGameTest implements FabricGameTest {
 
     private static LivingEntity vindicator(GameTestHelper context) {
         // 禁止 AI 与重力引入额外伤害，宿主仍由正式类人接线创建。
-        var target = context.spawn(EntityType.VINDICATOR,
+        var target = context.spawn(EntityTypes.VINDICATOR,
                 SPAWN_COORDINATE, SPAWN_COORDINATE, SPAWN_COORDINATE);
         target.setNoAi(true /* aiDisabled */);
         target.setNoGravity(true /* noGravity */);
@@ -126,7 +127,8 @@ public final class DamageSpilloverGameTest implements FabricGameTest {
         target.invulnerableTime = 0;
         target.getRandom().setSeed(armSeed(body));
         int previous = EVENTS.size();
-        context.assertTrue(target.hurt(target.damageSources().generic(), amount), "实体拒绝伤害");
+        context.assertTrue(target.hurtServer(context.getLevel(), target.damageSources().generic(), amount),
+                "实体拒绝伤害");
         List<VanillaDamageFabric.DamageEvent> events = EVENTS.subList(previous, EVENTS.size()).stream()
                 .filter(event -> event.target() == target).toList();
         context.assertTrue(events.size() == 1, "一次命中没有产生唯一已提交事件");

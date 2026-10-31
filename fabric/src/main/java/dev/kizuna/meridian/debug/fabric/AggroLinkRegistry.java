@@ -53,11 +53,12 @@ final class AggroLinkRegistry {
     }
 
     Optional<Mob> selected(ServerPlayer player) {
+        // 选中的生物已卸载或死亡时顺带清掉选择，只返回仍然有效的那只。
         Selection selection = selections.get(player.getUUID());
         if (selection == null) {
             return Optional.empty();
         }
-        Mob mob = findMob(player.getServer(), selection.mobId());
+        Mob mob = findMob(player.level().getServer(), selection.mobId());
         if (mob == null || !mob.isAlive()) {
             clearSelection(player);
             return Optional.empty();
@@ -97,6 +98,7 @@ final class AggroLinkRegistry {
     }
 
     void clearSelection(ServerPlayer player) {
+        // 同一生物被多人选中时按计数恢复，最后一人取消后才还原它原来的发光状态。
         Selection selection = selections.remove(player.getUUID());
         if (selection == null) {
             return;
@@ -106,7 +108,7 @@ final class AggroLinkRegistry {
         if (remaining != null && remaining <= 0) {
             glowSelections.remove(mobId);
             Boolean wasGlowing = originalGlow.remove(mobId);
-            Mob mob = findMob(player.getServer(), mobId);
+            Mob mob = findMob(player.level().getServer(), mobId);
             if (mob != null && wasGlowing != null) {
                 mob.setGlowingTag(wasGlowing /* glowing */);
             }

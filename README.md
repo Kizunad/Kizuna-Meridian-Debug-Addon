@@ -54,7 +54,7 @@ Debug 不用 Mixin，也不借用其他附属的包名。它只调用各宿主�
 
 ## 依赖
 
-运行时硬依赖 Meridian Mod Framework、Human、Vanilla-Damage 和 Vanilla Humanoid Threatening；这些附属缺失时不提供降级路径。Java 17、Minecraft 1.20.1、Fabric Loader 0.16.10。
+运行时硬依赖 Meridian Mod Framework、Human、Vanilla-Damage 和 Vanilla Humanoid Threatening；这些附属缺失时不提供降级路径。Java 25、Minecraft 26.2、Fabric Loader 0.20.1。
 
 构建时 Framework、功法库、Human、Vanilla-Damage 与 Threatening 在 `settings.gradle` 中按 Framework 统一装配清单以源码组合（`kizunaWorkspace.includeSource`），版本取自 Framework 的版本目录；GameTest 复用 Framework 的 `full-assembly.gradle` 装入整套产物，未组合的其余仓库读取各自已构建的安装 JAR。
 

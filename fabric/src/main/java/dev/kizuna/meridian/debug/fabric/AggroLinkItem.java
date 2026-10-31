@@ -4,7 +4,6 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
-import net.minecraft.world.InteractionResultHolder;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.player.Player;
@@ -21,7 +20,7 @@ final class AggroLinkItem extends Item {
     @Override
     public InteractionResult interactLivingEntity(ItemStack stack, Player user, LivingEntity entity, InteractionHand hand) {
         // 客户端只保留原版交互反馈，选择状态和仇恨覆盖由服务端保存。
-        if (user.level().isClientSide) {
+        if (user.level().isClientSide()) {
             return InteractionResult.SUCCESS;
         }
         if (user instanceof ServerPlayer player) {
@@ -31,12 +30,12 @@ final class AggroLinkItem extends Item {
     }
 
     @Override
-    public InteractionResultHolder<ItemStack> use(Level world, Player user, InteractionHand hand) {
-        // 右键空气取消当前选择，避免把半完成的调试状态留在玩家身上。
-        if (!world.isClientSide && user instanceof ServerPlayer player) {
+    public InteractionResult use(Level world, Player user, InteractionHand hand) {
+        // 右键空气取消当前选择，避免把半完成的调试状态留在玩家身上。26.2 的 SUCCESS 只在客户端挥手，与旧版分端成功相同。
+        if (!world.isClientSide() && user instanceof ServerPlayer player) {
             DebugFabric.cancelAggroSelection(player);
         }
-        return InteractionResultHolder.sidedSuccess(user.getItemInHand(hand), world.isClientSide /* clientSide */);
+        return InteractionResult.SUCCESS;
     }
 
     private static void handleEntity(ServerPlayer player, LivingEntity entity) {
@@ -56,6 +55,7 @@ final class AggroLinkItem extends Item {
     }
 
     private static void send(ServerPlayer player, String message) {
-        player.displayClientMessage(Component.literal(message), true /* overlay */);
+        // 选择提示显示在快捷栏上方，不进聊天记录。
+        player.sendOverlayMessage(Component.literal(message));
     }
 }

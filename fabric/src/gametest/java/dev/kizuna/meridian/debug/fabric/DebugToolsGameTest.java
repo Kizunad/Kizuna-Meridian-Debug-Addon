@@ -3,25 +3,29 @@ package dev.kizuna.meridian.debug.fabric;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import java.util.List;
 import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.gametest.framework.GameTest;
+import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
-import net.minecraft.world.entity.EntityType;
+import net.minecraft.server.permissions.LevelBasedPermissionSet;
+import net.minecraft.server.permissions.PermissionSet;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.phys.Vec3;
+
+import static dev.kizuna.meridian.debug.fabric.DebugGameTestTicks.DEFAULT_TIMEOUT;
 
 /** 新调试命令的最小真实宿主回归。 */
 public final class DebugToolsGameTest {
     private static final int SPAWN_X = 2;
     private static final int SPAWN_Y = 2;
     private static final int SPAWN_Z = 2;
-    private static final int COMMAND_PERMISSION_LEVEL = 4;
+    private static final PermissionSet COMMAND_PERMISSIONS = LevelBasedPermissionSet.OWNER;
     private static final double TEST_QI_AMOUNT = 0.01;
     private static final double RATIO_TOLERANCE = 0.000001;
 
-    @GameTest(template = net.fabricmc.fabric.api.gametest.v1.FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void fatigueAndQiUseAuthoritativeHumanoidHost(GameTestHelper context) {
-        LivingEntity villager = context.spawn(EntityType.VILLAGER, SPAWN_X, SPAWN_Y, SPAWN_Z);
+        LivingEntity villager = context.spawn(EntityTypes.VILLAGER, SPAWN_X, SPAWN_Y, SPAWN_Z);
         disableAi(villager);
         BodySnapshot initial = DebugBodyAccess.inspect(villager).orElseThrow();
         String tissueId = initial.getStructure().getTissues(0).getId();
@@ -50,7 +54,7 @@ public final class DebugToolsGameTest {
         context.succeed();
     }
 
-    @GameTest(template = net.fabricmc.fabric.api.gametest.v1.FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void qiSetUsesHumanDebugAuthorization(GameTestHelper context) {
         DebugAddonGameTest.DebugTestPlayer online = new DebugAddonGameTest.DebugTestPlayer(context);
         context.runAfterDelay(2, () -> {
@@ -70,10 +74,11 @@ public final class DebugToolsGameTest {
     }
 
     private static CommandSourceStack source(GameTestHelper context, LivingEntity entity) {
+        // 服务器管理员级命令源，位置取目标实体所在方块中心。
         return context.getLevel().getServer().createCommandSourceStack()
                 .withLevel(context.getLevel())
                 .withPosition(Vec3.atCenterOf(entity.blockPosition()))
-                .withPermission(COMMAND_PERMISSION_LEVEL);
+                .withPermission(COMMAND_PERMISSIONS);
     }
 
     private static void disableAi(LivingEntity entity) {

@@ -20,7 +20,7 @@ kizunaWorkspace.includeSource('framework', [
         client: ['local.meridian:client', 'dev.kizuna.meridian:client'],
         server: ['local.meridian:server', 'dev.kizuna.meridian:server']
 ])
-// 其余仓库的 Fabric 是模组依赖，Loom 按真实坐标重新加入其传递库，所以替换键都用各工程自身的 group 与工程名。
+// 其余仓库的 Fabric 都按真实坐标声明依赖，所以替换键都用各工程自身的 group 与工程名。
 kizunaWorkspace.includeSource('technique', [
         fabric: 'dev.kizuna.meridian.technique:fabric',
         server: 'dev.kizuna.meridian.technique:server',

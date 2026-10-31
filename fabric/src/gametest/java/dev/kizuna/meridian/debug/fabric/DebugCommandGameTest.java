@@ -15,13 +15,14 @@ import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.CastPhase;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.CastRequest;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueFailure;
 import dev.kizuna.meridian.technique.protocol.pb.TechniqueMessages.TechniqueReference;
-import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
-import net.minecraft.gametest.framework.GameTest;
+import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.permissions.LevelBasedPermissionSet;
+import net.minecraft.server.permissions.PermissionSet;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.monster.Vindicator;
+import net.minecraft.world.entity.monster.illager.Vindicator;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import java.util.List;
@@ -30,9 +31,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import static dev.kizuna.meridian.debug.fabric.DebugGameTestTicks.DEFAULT_TIMEOUT;
+
 /** 调试命令走真实命令树和宿主：功法遗忘、冷却、状态、跃步观察、身体明细、疲劳、真元与补全。 */
-public final class DebugCommandGameTest implements FabricGameTest {
-    private static final int OP_LEVEL = 4;
+public final class DebugCommandGameTest {
+    private static final PermissionSet OP_PERMISSIONS = LevelBasedPermissionSet.OWNER;
     private static final int JOIN_TICKS = 2;
     private static final int SETTLE_MARGIN_TICKS = 5;
     private static final long MILLIS_PER_TICK = 50;
@@ -56,14 +59,14 @@ public final class DebugCommandGameTest implements FabricGameTest {
     private static final String LEAP_LINE = "跃步 LEAP";
     private static final String EFFORT_MARK = "做功=";
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void techniqueCommandsDriveRealCastsLeapsAndForgetting(GameTestHelper context) {
         // 学会后可施放；冷却中被拒且状态给出阶段与失败码；清冷却后立即可再施放；一次跃步一行日志；忘记后按未学拒绝。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
         context.runAfterDelay(JOIN_TICKS, () -> guarded(online, () -> learnAndCast(context, online)));
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void bodyAndFatigueCommandsMatchTheHostBody(GameTestHelper context) {
         // 摘要给出宿主快照里的境界与真元；按带冒号的标签设置疲劳后每块腿肌恰为该比例，清除后归零。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
@@ -81,7 +84,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         });
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void eachDebugCommandCompletesItsNextArgument(GameTestHelper context) {
         // 每条调试指令至少一处补全：疲劳标签带引号、功法 ID 带命名空间、部位与经脉取自实际身体、字面量与实体选择器。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
@@ -110,7 +113,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
         });
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void qiFillAndSetTakeMeridianAccountAndDensity(GameTestHelper context) {
         // 由 Human 移交的带参形式：按经脉补到指定量或补满，按经脉或全身覆盖内腔、外壁的数量与密度。
         var online = new DebugAddonGameTest.DebugTestPlayer(context);
@@ -122,12 +125,12 @@ public final class DebugCommandGameTest implements FabricGameTest {
         });
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void qiCommandsAcceptFreshTrueQiVindicators(GameTestHelper context) {
         // 命令生成的真炁卫道士带着生成器残余与高密度主元；qi set 覆盖到半满、qi fill 补满都不越过内腔。
         var source = context.getLevel().getServer().createCommandSourceStack()
                 .withLevel(context.getLevel())
-                .withPermission(OP_LEVEL);
+                .withPermission(OP_PERMISSIONS);
         Vec3 position = Vec3.atBottomCenterOf(context.absolutePos(new BlockPos(SPAWN_X, SPAWN_Y, SPAWN_Z)));
         String coordinates = String.format(Locale.ROOT, "%.2f %.2f %.2f", position.x, position.y, position.z);
         for (int index = 0; index < VINDICATOR_SAMPLES; index++) {
@@ -145,7 +148,7 @@ public final class DebugCommandGameTest implements FabricGameTest {
     private static void learnAndCast(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online) {
         // 开脉、补元和学卷都走命令；首次施放进入起手，状态显示 WARMUP。
         Vec3 position = Vec3.atBottomCenterOf(context.absolutePos(new BlockPos(PLAYER_X, PLAYER_Y, PLAYER_Z)));
-        online.player.moveTo(position.x, position.y, position.z, 0, 0);
+        online.player.snapTo(position.x, position.y, position.z, 0, 0);
         var source = source(online);
         assertCommand(context, source, "meridian opening complete @s all");
         assertCommand(context, source, "meridian qi fill @s");
@@ -288,7 +291,10 @@ public final class DebugCommandGameTest implements FabricGameTest {
         assertCommand(context, source, "meridian qi set " + uuid + " " + amount);
         double total = lumenTotal(DebugBodyAccess.inspect(vindicator).orElseThrow());
         context.assertTrue(Math.abs(total - Double.parseDouble(amount)) < TOLERANCE, "qi set 余额不符：" + total);
-        assertCommand(context, vindicator.createCommandSourceStack().withPermission(OP_LEVEL), "meridian qi fill");
+        // 卫道士自身作命令源；26.2 的实体命令源丢弃回显，与旧版非玩家实体相同。
+        var self = vindicator.createCommandSourceStackForNameResolution(context.getLevel())
+                .withPermission(OP_PERMISSIONS);
+        assertCommand(context, self, "meridian qi fill");
         assertWithinLumens(context, DebugBodyAccess.inspect(vindicator).orElseThrow());
     }
 
@@ -395,12 +401,12 @@ public final class DebugCommandGameTest implements FabricGameTest {
 
     private static CommandSourceStack source(DebugAddonGameTest.DebugTestPlayer online) {
         // 玩家自身作命令源，回显进入测试连接记录的聊天栏。
-        return online.player.createCommandSourceStack().withPermission(OP_LEVEL);
+        return online.player.createCommandSourceStack().withPermission(OP_PERMISSIONS);
     }
 
     private static void assertCommand(GameTestHelper context, CommandSourceStack source, String command) {
         // 与聊天命令相同的执行入口；调试命令按成功目标数返回，这里每次只有一个目标。
-        int result = source.getServer().getCommands().performPrefixedCommand(source, command);
+        int result = DebugTestCommands.run(source, command);
         context.assertTrue(result == 1, "命令没有成功：" + command + " -> " + result);
     }
 }

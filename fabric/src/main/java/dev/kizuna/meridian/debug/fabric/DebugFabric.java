@@ -30,14 +30,15 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.Permission;
+import net.minecraft.server.permissions.Permissions;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -57,11 +58,9 @@ import java.util.logging.Logger;
 
 /** 调试库 Fabric 入口；命令、物品和伤害日志都沿服务端权威接口运行。 */
 public final class DebugFabric implements ModInitializer {
-    public static final ResourceLocation LENS_STATE = new ResourceLocation("meridian_debug", "lens_state");
     private static final Logger LOGGER = Logger.getLogger("meridian_debug");
-    static final int PERMISSION_LEVEL = 2;
+    private static final Permission LENS_PERMISSION = Permissions.COMMANDS_GAMEMASTER;
     private static final int LENS_REFRESH_TICKS = 10;
-    private static final int MAX_TARGET_NAME_LENGTH = 64;
     private static final int BODY_CHAT_LIMIT = 2800;
     private static final String BODY_LOG_DIRECTORY = "logs/meridian";
     private static final String HEALTH_SOURCE = "meridian_debug:command";
@@ -76,6 +75,8 @@ public final class DebugFabric implements ModInitializer {
         // 入口先绑定注册表和身体宿主，再安装命令、伤害观察和周期推送。
         INSTANCE = this;
         DebugItems.register();
+        // 透视镜状态只有服务端发往客户端一个方向；公共初始化里登记，两端才都能编解码。
+        PayloadTypeRegistry.clientboundPlay().register(LensStatePayload.TYPE, LensStatePayload.CODEC);
         DebugBodyAccess.bindHosts();
         DebugCommands.register();
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
@@ -242,14 +243,14 @@ public final class DebugFabric implements ModInitializer {
     private void recordLeap(TechniqueLeaps.LeapAttempt attempt) {
         // 功法库在服务端每次付费起跳后回调一次，只发给正在观察该实体的在线管理员。
         LivingEntity actor = attempt.actor();
-        MinecraftServer server = actor.getServer();
+        MinecraftServer server = actor.level().getServer();
         if (server == null) {
             return;
         }
         String line = leapLine(attempt);
         for (ServerPlayer viewer : server.getPlayerList().getPlayers()) {
             if (leapWatches.accepts(viewer, actor)) {
-                viewer.displayClientMessage(Component.literal(line), false /* overlay */);
+                viewer.sendSystemMessage(Component.literal(line));
             }
         }
     }
@@ -439,17 +440,17 @@ public final class DebugFabric implements ModInitializer {
 
     static void printSnapshot(ServerPlayer viewer, LivingEntity target) {
         // 右键只读已加载实体；未绑定实体明确显示无身体，不创建临时快照。
-        if (!viewer.hasPermissions(PERMISSION_LEVEL)) {
-            viewer.displayClientMessage(Component.literal("肢体透视镜需要权限等级 2"), true /* overlay */);
+        if (!viewer.permissions().hasPermission(LENS_PERMISSION)) {
+            viewer.sendOverlayMessage(Component.literal("肢体透视镜需要权限等级 2"));
             return;
         }
         try {
             Optional<BodySnapshot> snapshot = DebugBodyAccess.inspect(target);
             if (snapshot.isEmpty()) {
-                viewer.displayClientMessage(Component.literal("目标无身体"), false /* overlay */);
+                viewer.sendSystemMessage(Component.literal("目标无身体"));
                 return;
             }
-            viewer.displayClientMessage(Component.literal(DebugSnapshotText.full(snapshot.get())), false /* overlay */);
+            viewer.sendSystemMessage(Component.literal(DebugSnapshotText.full(snapshot.get())));
         } catch (RuntimeException failure) {
             report(viewer, failure);
         }
@@ -473,9 +474,9 @@ public final class DebugFabric implements ModInitializer {
 
     private void sendLensState(ServerPlayer player) {
         // 权限不足时清空旧显示并提示一次，避免客户端继续看到上一个目标。
-        if (!player.hasPermissions(PERMISSION_LEVEL)) {
+        if (!player.permissions().hasPermission(LENS_PERMISSION)) {
             sendEmptyLensState(player);
-            player.displayClientMessage(Component.literal("肢体透视镜需要权限等级 2"), true /* overlay */);
+            player.sendOverlayMessage(Component.literal("肢体透视镜需要权限等级 2"));
             return;
         }
         LivingEntity target = DebugTargeting.entity(player);
@@ -495,19 +496,12 @@ public final class DebugFabric implements ModInitializer {
     private static void sendLensState(ServerPlayer player, LivingEntity target,
                                       Optional<BodySnapshot> snapshot) {
         // 包只包含当前目标和一次完整快照，客户端不参与身体选择或数值计算。
-        var buffer = PacketByteBufs.create();
-        buffer.writeBoolean(true /* hasTarget */);
-        buffer.writeUtf(target.getDisplayName().getString(), MAX_TARGET_NAME_LENGTH);
-        buffer.writeBoolean(snapshot.isPresent());
-        snapshot.ifPresent(body -> buffer.writeByteArray(body.toByteArray()));
-        ServerPlayNetworking.send(player, LENS_STATE, buffer);
+        ServerPlayNetworking.send(player, LensStatePayload.of(target.getDisplayName().getString(), snapshot));
     }
 
     private static void sendEmptyLensState(ServerPlayer player) {
         // 没有准星目标时让客户端清空旧快照。
-        var buffer = PacketByteBufs.create();
-        buffer.writeBoolean(false /* hasTarget */);
-        ServerPlayNetworking.send(player, LENS_STATE, buffer);
+        ServerPlayNetworking.send(player, LensStatePayload.empty());
     }
 
     private static boolean isHoldingLens(ServerPlayer player) {
@@ -532,7 +526,7 @@ public final class DebugFabric implements ModInitializer {
             return;
         }
         AggroLinkMode mode = player.isShiftKeyDown() ? AggroLinkMode.ONEWAY : AggroLinkMode.MUTUAL;
-        registry.link(player.getServer(), source, target, mode);
+        registry.link(player.level().getServer(), source, target, mode);
         registry.clearSelection(player);
         if (mode == AggroLinkMode.MUTUAL) {
             sendAggroMessage(player, source.getName().getString() + " ⇄ "
@@ -602,7 +596,8 @@ public final class DebugFabric implements ModInitializer {
     }
 
     private static void sendAggroMessage(ServerPlayer player, String message) {
-        player.displayClientMessage(Component.literal(message), true /* overlay */);
+        // 牵引结果显示在快捷栏上方，不进聊天记录。
+        player.sendOverlayMessage(Component.literal(message));
     }
 
     private static boolean healOne(CommandSourceStack source, LivingEntity target, DebugCommands.HealMode mode) {
@@ -712,13 +707,13 @@ public final class DebugFabric implements ModInitializer {
 
     private void recordDamage(VanillaDamageFabric.DamageEvent event) {
         // 原版结算提交后再向所有在线观察者发送，日志不会影响伤害结果。
-        for (ServerPlayer viewer : event.target().getServer().getPlayerList().getPlayers()) {
+        for (ServerPlayer viewer : event.target().level().getServer().getPlayerList().getPlayers()) {
             if (!watches.accepts(viewer, event)) {
                 continue;
             }
             try {
                 DamageLogEntry entry = damageLogEntry(viewer, event);
-                viewer.displayClientMessage(Component.literal(DamageLogFormatter.format(entry)), false /* overlay */);
+                viewer.sendSystemMessage(Component.literal(DamageLogFormatter.format(entry)));
             } catch (RuntimeException failure) {
                 LOGGER.log(Level.WARNING, "伤害日志格式化失败", failure);
             }
@@ -738,7 +733,7 @@ public final class DebugFabric implements ModInitializer {
         String target = label(event.target(), viewer);
         String kind = kindLabel(input.kind());
         String source = event.source().typeHolder().unwrapKey()
-                .map(key -> key.location().toString()).orElse("minecraft:unknown");
+                .map(key -> key.identifier().toString()).orElse("minecraft:unknown");
         var resolution = result.health().getDamageResolution();
         double requestedHp = resolution.getLossesList().stream()
                 .filter(loss -> loss.getTarget().hasPartId() && loss.getTarget().getPartId().equals(hit.id()))
@@ -820,7 +815,7 @@ public final class DebugFabric implements ModInitializer {
     private static void report(ServerPlayer player, RuntimeException failure) {
         // 观察失败保留服务端日志，同时给管理员一个不泄露堆栈的短提示。
         LOGGER.log(Level.WARNING, "调试操作失败 player=" + player.getStringUUID(), failure);
-        player.displayClientMessage(Component.literal("调试操作失败：" + failure.getMessage()), false /* overlay */);
+        player.sendSystemMessage(Component.literal("调试操作失败：" + failure.getMessage()));
     }
 
     private static void report(CommandSourceStack source, LivingEntity target, RuntimeException failure) {
@@ -952,7 +947,7 @@ public final class DebugFabric implements ModInitializer {
     private static Path writeBodyDetails(MinecraftServer server, LivingEntity target, BodySnapshot body) {
         // 详情写进游戏运行目录下的固定子目录，换机器或换实例都不依赖本机绝对路径。
         try {
-            Path runDirectory = server.getServerDirectory().toPath();
+            Path runDirectory = server.getServerDirectory();
             Path directory = runDirectory.resolve(BODY_LOG_DIRECTORY).toAbsolutePath().normalize();
             Files.createDirectories(directory);
             String safeName = target.getName().getString().replaceAll("[^a-zA-Z0-9._-]", "_");

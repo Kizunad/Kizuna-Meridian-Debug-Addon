@@ -3,27 +3,30 @@ package dev.kizuna.meridian.debug.fabric;
 import dev.kizuna.meridian.human.server.HumanRevival;
 import dev.kizuna.meridian.protocol.pb.HealthMessages.ConfirmBodyDeath;
 import dev.kizuna.meridian.protocol.pb.MeridianMessages.BodyCommand;
-import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.gametest.framework.GameTest;
+import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
-import net.minecraft.world.entity.EntityType;
+import net.minecraft.server.permissions.LevelBasedPermissionSet;
+import net.minecraft.server.permissions.PermissionSet;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 
+import static dev.kizuna.meridian.debug.fabric.DebugGameTestTicks.DEFAULT_TIMEOUT;
+
 /** 调试复活经过真实命令树、原版补全和唯一身体健康事务。 */
-public final class DebugRevivalGameTest implements FabricGameTest {
-    private static final int OP_LEVEL = 4;
+public final class DebugRevivalGameTest {
+    private static final PermissionSet OP_PERMISSIONS = LevelBasedPermissionSet.OWNER;
     private static final int SPAWN_HEIGHT = 2;
     private static final int DEATH_OBSERVATION_TICKS = 3;
     private static final float LETHAL_DAMAGE = 1000000;
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void reviveCommandSupportsSelfTargetsCompletionAndRejectsLivingBody(GameTestHelper context) {
         // 自身和显式选择器共用一年费用；活体重复调用不能变成免费治疗或重复扣费。
         try (var online = new DebugAddonGameTest.DebugTestPlayer(context)) {
             var player = online.player;
-            var source = player.createCommandSourceStack().withPermission(OP_LEVEL);
+            var source = player.createCommandSourceStack().withPermission(OP_PERMISSIONS);
             double cost = HumanRevival.request("debug_test:revival").getLifespanSeconds();
             double spent = DebugBodyAccess.inspect(player).orElseThrow().getVitality().getSpentLifespanSeconds();
             confirmDeath(player);
@@ -39,13 +42,13 @@ public final class DebugRevivalGameTest implements FabricGameTest {
         context.succeed();
     }
 
-    @GameTest(template = FabricGameTest.EMPTY_STRUCTURE)
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void deadVindicatorStaysDeadWithoutAutomaticLifespanCharge(GameTestHelper context) {
         // 类人实体只走死亡清账，玩家重生回调不能替它自动复活。
-        var vindicator = context.spawn(EntityType.VINDICATOR, 1, SPAWN_HEIGHT, 1);
+        var vindicator = context.spawn(EntityTypes.VINDICATOR, 1, SPAWN_HEIGHT, 1);
         ((Mob) vindicator).setNoAi(true /* aiDisabled */);
         var before = DebugBodyAccess.inspect(vindicator).orElseThrow();
-        vindicator.hurt(vindicator.damageSources().genericKill(), LETHAL_DAMAGE);
+        vindicator.hurtServer(context.getLevel(), vindicator.damageSources().genericKill(), LETHAL_DAMAGE);
         context.runAfterDelay(DEATH_OBSERVATION_TICKS, () -> {
             var after = DebugBodyAccess.inspect(vindicator).orElseThrow();
             context.assertTrue(after.getVitality().getDead() && !vindicator.isAlive(), "卫道士死亡后自动复活");
@@ -74,7 +77,7 @@ public final class DebugRevivalGameTest implements FabricGameTest {
         // 检查 body 分支下 revive 节点自带的权限和 literal 补全，再请求原版实体参数补全。
         var dispatcher = source.getServer().getCommands().getDispatcher();
         var revive = dispatcher.getRoot().getChild("meridian").getChild("body").getChild("revive");
-        context.assertTrue(!revive.canUse(source.withPermission(0)), "普通玩家可调用调试复活");
+        context.assertTrue(!revive.canUse(source.withPermission(PermissionSet.NO_PERMISSIONS)), "普通玩家可调用调试复活");
         String input = "meridian body re";
         var literals = dispatcher.getCompletionSuggestions(dispatcher.parse(input, source)).join();
         context.assertTrue(literals.getList().stream().anyMatch(item -> item.getText().equals("revive")),
@@ -87,6 +90,6 @@ public final class DebugRevivalGameTest implements FabricGameTest {
 
     private static int command(CommandSourceStack source, String text) {
         // 与聊天命令相同的执行入口，返回成功目标数量。
-        return source.getServer().getCommands().performPrefixedCommand(source, text);
+        return DebugTestCommands.run(source, text);
     }
 }

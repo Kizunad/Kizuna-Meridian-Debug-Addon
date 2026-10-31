@@ -1,4 +1,4 @@
-plugins { id 'fabric-loom' }
+plugins { id 'net.fabricmc.fabric-loom' }
 
 description = '调试物品、命令和服务端快照推送。'
 
@@ -7,12 +7,12 @@ repositories {
 }
 
 dependencies {
+    // 26.x 不混淆：直接用官方名编译，没有映射，模组依赖也不经重映射。
     minecraft libs.minecraft
-    mappings loom.officialMojangMappings()
-    modImplementation libs.fabric.loader
-    modImplementation libs.fabric.api
+    implementation libs.fabric.loader
+    implementation libs.fabric.api
     // /meridian 指令统一注册点（Framework 的 Fabric 模组 meridian_framework），Framework 组合时自动替换为源码工程。
-    modImplementation 'dev.kizuna.meridian:fabric'
+    implementation 'dev.kizuna.meridian:fabric'
     implementation project(':server')
     include project(':server')
     include implementation('local.meridian:server')
@@ -21,10 +21,10 @@ dependencies {
     implementation libs.protobuf.java
     include libs.protobuf.java
     // 相邻仓库在 settings 中以源码组合；与原先读单个 JAR 一致只取各模块本身，传递库由完整装配在运行时补齐。
-    modImplementation('dev.kizuna.meridian.human:fabric') { transitive = false }
-    modImplementation('dev.kizuna.meridian.vanilla:fabric') { transitive = false }
-    modImplementation('dev.kizuna.meridian.humanoid:fabric') { transitive = false }
-    modImplementation('dev.kizuna.meridian.technique:fabric') { transitive = false }
+    implementation('dev.kizuna.meridian.human:fabric') { transitive = false }
+    implementation('dev.kizuna.meridian.vanilla:fabric') { transitive = false }
+    implementation('dev.kizuna.meridian.humanoid:fabric') { transitive = false }
+    implementation('dev.kizuna.meridian.technique:fabric') { transitive = false }
     // 观察回执引用 Damage 的纯 Java 类型；运行时由必装 Damage 模组提供。
     compileOnly('dev.kizuna.meridian.vanilla:server') { transitive = false }
     // 复活费用读取必装 Human 的同一内容数据，不复制调试专用常量。
@@ -72,6 +72,8 @@ simulation-distance=2
 
 dependencies {
     gametestRuntimeOnly project(':server')
+    // 登录假玩家夹具来自功法库的 testFixtures，与功法 fabric 同经源码组合解析。
+    gametestImplementation testFixtures('dev.kizuna.meridian.technique:fabric')
 }
 
 loom {
