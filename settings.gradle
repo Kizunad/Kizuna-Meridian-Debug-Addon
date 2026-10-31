@@ -6,20 +6,36 @@ pluginManagement {
     }
 }
 
+// 相邻仓库位置、产物路径与第三方版本都由 Framework 的工作区脚本提供（kizunaWorkspace、libs）。
+apply from: new File(rootDir.parentFile, 'Kizuna-Meridian-Mod-Framework/scripts/workspace.gradle')
+
 rootProject.name = 'kizuna-meridian-debug-addon'
 include 'shared', 'server', 'fabric', 'verification'
 
-includeBuild(providers.gradleProperty('meridianFrameworkDir')
-        .getOrElse('../Kizuna-Meridian-Mod-Framework')) {
-    dependencySubstitution {
-        substitute module('local.meridian:client') using project(':client')
-        substitute module('local.meridian:server') using project(':server')
-    }
-}
-
-includeBuild(providers.gradleProperty('meridianTechniqueDir')
-        .getOrElse('../Kizuna-Meridian-Technique-Framework')) {
-    dependencySubstitution {
-        substitute module('local.meridian.technique:server') using project(':server')
-    }
-}
+// 调试库直接使用相邻仓库的当前源码。local.meridian 是框架的本地替换键；
+// 本构建直接组合框架时以这里的规则为准，功法与 Human 的协议还需要 client。
+// 按坐标装入 Human 等模组时，Loom 以框架真实坐标 dev.kizuna.meridian 重新加入其传递库；
+// 只替换 local.meridian 时该坐标会按外部模块解析而失败，所以真实坐标也登记替换。
+kizunaWorkspace.includeSource('framework', [
+        client: ['local.meridian:client', 'dev.kizuna.meridian:client'],
+        server: ['local.meridian:server', 'dev.kizuna.meridian:server']
+])
+// 其余仓库的 Fabric 是模组依赖，Loom 按真实坐标重新加入其传递库，所以替换键都用各工程自身的 group 与工程名。
+kizunaWorkspace.includeSource('technique', [
+        fabric: 'dev.kizuna.meridian.technique:fabric',
+        server: 'dev.kizuna.meridian.technique:server',
+        shared: 'dev.kizuna.meridian.technique:shared'
+])
+kizunaWorkspace.includeSource('human', [
+        fabric: 'dev.kizuna.meridian.human:fabric',
+        server: 'dev.kizuna.meridian.human:server',
+        shared: 'dev.kizuna.meridian.human:shared'
+])
+kizunaWorkspace.includeSource('vanilla-damage', [
+        fabric: 'dev.kizuna.meridian.vanilla:fabric',
+        server: 'dev.kizuna.meridian.vanilla:server'
+])
+kizunaWorkspace.includeSource('humanoid-threatening', [
+        fabric: 'dev.kizuna.meridian.humanoid:fabric',
+        server: 'dev.kizuna.meridian.humanoid:server'
+])

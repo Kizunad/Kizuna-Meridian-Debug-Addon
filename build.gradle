@@ -1,6 +1,6 @@
 plugins {
     id 'base'
-    id 'fabric-loom' version '1.6-SNAPSHOT' apply false
+    alias(libs.plugins.fabric.loom) apply false
 }
 
 allprojects {
@@ -11,10 +11,10 @@ allprojects {
 subprojects {
     apply plugin: 'java-library'
     repositories { mavenCentral() }
-    java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
+    java { toolchain { languageVersion = JavaLanguageVersion.of(libs.versions.java.get()) } }
     base.archivesName = "${rootProject.name}-${project.name}"
     tasks.withType(JavaCompile).configureEach {
-        options.release = 17
+        options.release = libs.versions.java.get().toInteger()
         options.encoding = 'UTF-8'
     }
     tasks.withType(Jar).configureEach {

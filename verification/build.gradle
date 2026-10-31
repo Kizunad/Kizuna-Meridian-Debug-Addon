@@ -2,7 +2,7 @@ description = '调试库的 JUnit 验证。'
 
 dependencies {
     api project(':server')
-    testImplementation 'junit:junit:4.13.2'
+    testImplementation libs.junit4
 }
 
 test { useJUnit() }
