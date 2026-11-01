@@ -5,7 +5,7 @@
 ## 功能
 
 - `meridian_debug:limb_lens`：手持时每 10 tick 显示准星实体的部位 HP、状态、总 HP、体力和真元；右键打印完整快照。
-- `meridian_debug:aggro_link`：选择两个可攻击生物，持续覆盖其攻击目标；普通右键互相仇恨，潜行右键建立单向仇恨。
+- `meridian_debug:aggro_link`：选择两个可攻击生物，持续覆盖其攻击目标；普通右键互相仇恨，潜行右键建立单向仇恨。牵引只改攻击目标，不改敌我判断：同伴（例如都不在队伍里的两只 `#minecraft:illager_friends` 袭击者）互不受功法伤害，要互打先用 `/team` 把双方分进不同队伍。
 
 指令统一挂在 Framework 的 `/meridian` 根下，权限都是 2，完整路径、权限与归属见 [Framework 指令页](https://github.com/Kizunad/Kizuna-Meridian-Mod-Framework/wiki/Commands)。本库登记的节点如下，省略 `[targets]` 时作用于执行者本人：
 
