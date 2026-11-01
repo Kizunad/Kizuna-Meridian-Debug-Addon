@@ -64,7 +64,6 @@ afterEvaluate {
             new File(runDirectory, 'server.properties').text = '''online-mode=false
 server-ip=127.0.0.1
 server-port=0
-level-type=flat
 generate-structures=false
 view-distance=2
 simulation-distance=2
