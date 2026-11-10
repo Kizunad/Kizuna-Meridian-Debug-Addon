@@ -26,6 +26,12 @@ kizunaWorkspace.includeSource('technique', [
         server: 'dev.kizuna.meridian.technique:server',
         shared: 'dev.kizuna.meridian.technique:shared'
 ])
+// 经 Threatening 组合的炼药客户端按真实坐标依赖 bs3d client，而经 Human 嵌套的 Progression 只登记 bs3d server；
+// 同一仓库只按最先登记的规则替换，嵌套构建在 includeBuild 时即登记，所以 bs3d 要在 Human 之前组合并列出两个模块。
+kizunaWorkspace.includeSource('bs3d', [
+        client: 'dev.kizuna.backpack3d:client',
+        server: 'dev.kizuna.backpack3d:server'
+])
 kizunaWorkspace.includeSource('human', [
         fabric: 'dev.kizuna.meridian.human:fabric',
         server: 'dev.kizuna.meridian.human:server',
