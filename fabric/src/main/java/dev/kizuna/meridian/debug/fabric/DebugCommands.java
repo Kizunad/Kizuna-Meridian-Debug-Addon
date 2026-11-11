@@ -25,6 +25,8 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.IdentifierArgument;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 
@@ -98,16 +100,59 @@ final class DebugCommands {
 
     private static void qiFill(LiteralArgumentBuilder<CommandSourceStack> fill) {
         // 省略经脉时补满全身内腔；指定经脉时补满该脉，再带数量时补到该脉的这一总量。
-        MeridianCommands.optionalEntities(fill, (parent, targets) -> parent
-                .executes(context -> DebugFabric.fillQi(context.getSource(), targets.resolve(context),
-                        WHOLE_BODY, OptionalDouble.empty()))
-                .then(meridian(targets, DebugCommands::meridianIds)
-                        .executes(context -> DebugFabric.fillQi(context.getSource(), targets.resolve(context),
-                                StringArgumentType.getString(context, "meridian"), OptionalDouble.empty()))
-                        .then(Commands.argument("amount", DoubleArgumentType.doubleArg(MIN_FILL_AMOUNT))
-                                .executes(context -> DebugFabric.fillQi(context.getSource(),
-                                        targets.resolve(context), StringArgumentType.getString(context, "meridian"),
-                                        OptionalDouble.of(DoubleArgumentType.getDouble(context, "amount")))))));
+        // 省略目标那一支先注册，Brigadier 会把「qi fill <词>」都交给它，所以这一支要先把词当在线玩家名认。
+        MeridianCommands.optionalEntities(fill, (parent, targets) -> {
+            WordFill wordFill;
+            if (parent == fill) {
+                wordFill = DebugCommands::fillNamedPlayerOrOwnMeridian;
+            } else {
+                wordFill = DebugCommands::fillListedMeridian;
+            }
+            parent.executes(context -> DebugFabric.fillQi(context.getSource(), targets.resolve(context),
+                            WHOLE_BODY, OptionalDouble.empty()))
+                    .then(meridian(targets, DebugCommands::meridianIds)
+                            .executes(context -> wordFill.run(context, targets, OptionalDouble.empty()))
+                            .then(Commands.argument("amount", DoubleArgumentType.doubleArg(MIN_FILL_AMOUNT))
+                                    .executes(context -> wordFill.run(context, targets,
+                                            OptionalDouble.of(DoubleArgumentType.getDouble(context, "amount"))))));
+        });
+    }
+
+    /** qi fill 在目标之后那个词的执行方式；省略目标与指定目标两支各取一种。 */
+    @FunctionalInterface
+    private interface WordFill {
+        int run(CommandContext<CommandSourceStack> context, Targets<Collection<? extends Entity>> targets,
+                OptionalDouble amount) throws CommandSyntaxException;
+    }
+
+    private static int fillListedMeridian(CommandContext<CommandSourceStack> context,
+                                          Targets<Collection<? extends Entity>> targets, OptionalDouble amount)
+            throws CommandSyntaxException {
+        // 目标已经写明，这个词只能是经脉 ID。
+        return DebugFabric.fillQi(context.getSource(), targets.resolve(context),
+                StringArgumentType.getString(context, "meridian"), amount);
+    }
+
+    private static int fillNamedPlayerOrOwnMeridian(CommandContext<CommandSourceStack> context,
+                                                    Targets<Collection<? extends Entity>> targets,
+                                                    OptionalDouble amount) throws CommandSyntaxException {
+        // 目标优先：这个词是在线玩家名，就补满这名玩家全身；否则才当执行者自己的经脉 ID。
+        String word = StringArgumentType.getString(context, "meridian");
+        CommandSourceStack source = context.getSource();
+        ServerPlayer named = source.getServer().getPlayerList().getPlayerByName(word);
+        if (named != null && amount.isPresent()) {
+            source.sendFailure(Component.literal(word + " 是在线玩家；给这名玩家补一条经脉要写 /meridian qi fill "
+                    + word + " <经脉> [数量]"));
+            return 0;
+        }
+        if (named != null) {
+            return DebugFabric.fillQi(source, List.of(named), WHOLE_BODY, OptionalDouble.empty());
+        }
+        if (source.getEntity() == null) {
+            source.sendFailure(Component.literal("没有名叫 " + word + " 的在线玩家；控制台和命令方块执行要写玩家名或选择器"));
+            return 0;
+        }
+        return DebugFabric.fillQi(source, targets.resolve(context), word, amount);
     }
 
     private static void qiSet(LiteralArgumentBuilder<CommandSourceStack> set) {

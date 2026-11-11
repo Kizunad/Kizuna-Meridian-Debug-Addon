@@ -58,6 +58,7 @@ public final class DebugCommandGameTest {
     private static final String LEAP_PREFIX = "跃步";
     private static final String LEAP_LINE = "跃步 LEAP";
     private static final String EFFORT_MARK = "做功=";
+    private static final String UNKNOWN_WORD = "no_such_word";
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void techniqueCommandsDriveRealCastsLeapsAndForgetting(GameTestHelper context) {
@@ -120,6 +121,27 @@ public final class DebugCommandGameTest {
         context.runAfterDelay(JOIN_TICKS, () -> {
             try (online) {
                 assertQiParameters(context, online.player, source(online));
+            }
+            context.succeed();
+        });
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void qiFillTakesAnOnlinePlayerNameBeforeAMeridian(GameTestHelper context) {
+        // 控制台写「qi fill 玩家名」补满这名玩家全身；控制台写不认识的词、玩家写不存在的经脉、玩家名后跟数量都报错。
+        var online = new DebugAddonGameTest.DebugTestPlayer(context);
+        context.runAfterDelay(JOIN_TICKS, () -> {
+            try (online) {
+                var console = context.getLevel().getServer().createCommandSourceStack().withPermission(OP_PERMISSIONS);
+                String name = online.player.getName().getString();
+                assertCommand(context, source(online), "meridian qi set 0 all lumen " + QiDensity.FREE);
+                assertCommand(context, console, "meridian qi fill " + name);
+                BodySnapshot filled = DebugBodyAccess.inspect(online.player).orElseThrow();
+                context.assertTrue(lumenTotal(filled) > TOLERANCE, "控制台按玩家名没有补上真元：" + lumenTotal(filled));
+                assertWithinLumens(context, filled);
+                assertRejected(context, console, "meridian qi fill " + UNKNOWN_WORD);
+                assertRejected(context, source(online), "meridian qi fill " + UNKNOWN_WORD);
+                assertRejected(context, console, "meridian qi fill " + name + " 1");
             }
             context.succeed();
         });
@@ -402,6 +424,12 @@ public final class DebugCommandGameTest {
     private static CommandSourceStack source(DebugAddonGameTest.DebugTestPlayer online) {
         // 玩家自身作命令源，回显进入测试连接记录的聊天栏。
         return online.player.createCommandSourceStack().withPermission(OP_PERMISSIONS);
+    }
+
+    private static void assertRejected(GameTestHelper context, CommandSourceStack source, String command) {
+        // 参数不对的指令必须报失败，不能把真元补到别处。
+        int result = DebugTestCommands.run(source, command);
+        context.assertTrue(result == 0, "参数不对的指令没有报错：" + command + " -> " + result);
     }
 
     private static void assertCommand(GameTestHelper context, CommandSourceStack source, String command) {

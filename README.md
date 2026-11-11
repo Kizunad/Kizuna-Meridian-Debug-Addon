@@ -21,7 +21,7 @@
 - `/meridian humanoid aggro <A> <B> [mutual|oneway]`：设置仇恨方向；`/meridian humanoid aggro clear [targets]` 清除覆盖，省略目标时清除全部（仇恨链接只连生物，不含玩家）。
 - `/meridian debug fatigue set [targets] <组织 ID|标签|all> <比例>` / `fatigue clear [targets] <组织 ID|标签|all>`：按 Framework 事务设置或清零组织疲劳。标签含冒号，需加引号，例如 `fatigue set @s "human:leg_muscle" 0.5`；补全直接给出带引号的文本。
 
-省略目标与给出单个词的写法共用一个位置：`/meridian qi fill <词>` 总按经脉解析，要指定玩家请写在经脉之前，例如 `/meridian qi fill <玩家> <经脉>`，或用选择器。
+省略目标与给出单个词的写法共用一个位置：`/meridian qi fill <词>` 先按在线玩家名认，是在线玩家就补满他全身（控制台、命令方块也能这样写）；不是在线玩家才按执行者自己的经脉解析。控制台写的词不是在线玩家名时报错；`qi fill <玩家名> <数量>` 也报错，给玩家补某条经脉要写 `/meridian qi fill <玩家> <经脉> [数量]`，或用选择器。
 
 ## 命令与补全来源
 
