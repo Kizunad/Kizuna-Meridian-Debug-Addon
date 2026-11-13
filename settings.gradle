@@ -41,6 +41,8 @@ kizunaWorkspace.includeSource('vanilla-damage', [
         fabric: 'dev.kizuna.meridian.vanilla:fabric',
         server: 'dev.kizuna.meridian.vanilla:server'
 ])
+// 经 Threatening 嵌套组合的炼药依赖 PA 生物附属（Brewing d9b9269 起），这里先登记，免得嵌套构建找不到它。
+kizunaWorkspace.includeSource('players-animation-mobs', ['': 'dev.kizuna:kizuna-players-animation-mobs-addon'])
 kizunaWorkspace.includeSource('humanoid-threatening', [
         fabric: 'dev.kizuna.meridian.humanoid:fabric',
         server: 'dev.kizuna.meridian.humanoid:server'
