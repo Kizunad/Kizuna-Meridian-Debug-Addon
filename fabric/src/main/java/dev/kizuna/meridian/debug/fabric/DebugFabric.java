@@ -4,6 +4,8 @@ import dev.kizuna.meridian.debug.DamageLogEntry;
 import dev.kizuna.meridian.debug.DamageLogFormatter;
 import dev.kizuna.meridian.debug.DamageSpilloverLog;
 import dev.kizuna.meridian.debug.HealPlan;
+import dev.kizuna.meridian.debug.QiChangeReport;
+import dev.kizuna.meridian.debug.QiDose;
 import dev.kizuna.meridian.fabric.MeridianCommands;
 import dev.kizuna.meridian.human.server.HumanRevival;
 import dev.kizuna.meridian.protocol.pb.ActivityMessages.ActivityEffort;
@@ -52,6 +54,7 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -278,37 +281,32 @@ public final class DebugFabric implements ModInitializer {
     }
 
     static int setQi(CommandSourceStack source, Collection<? extends Entity> selected, double amount) {
-        int successCount = 0;
-        for (Entity entity : selected) {
-            if (!(entity instanceof LivingEntity living)) {
-                source.sendFailure(Component.literal("目标不是活体：" + entity.getName().getString()));
-                continue;
-            }
-            try {
-                FailureCode failure = DebugQiBridge.set(living, amount);
-                if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
-                    source.sendFailure(Component.literal("真元设置失败：" + failure.name()));
-                    continue;
-                }
-                successCount++;
-                double total = DebugBodyAccess.inspect(living)
-                        .map(DebugFabric::lumenTotal)
-                        .orElse(0.0);
-                source.sendSuccess(() -> Component.literal(String.format(java.util.Locale.ROOT,
-                                "真元已设置：%s = %.4f 元", living.getName().getString(), total)),
-                        false /* broadcastToOps */);
-            } catch (DebugBodyAccess.DebugHostFailure failure) {
-                source.sendFailure(Component.literal("真元设置失败：" + failure.code().name()));
-            } catch (RuntimeException failure) {
-                report(source, living, failure, "真元设置失败");
-            }
-        }
-        return successCount;
+        // 只给数量：全身内腔覆盖为无属性游离态，与带参数形式走同一条执行路径。
+        return setQiAccount(source, selected, amount, DebugCommands.WHOLE_BODY, DebugCommands.QiAccount.LUMEN,
+                QiDose.FREE);
     }
 
     static int setQiAccount(CommandSourceStack source, Collection<? extends Entity> selected, double amount,
-                            String meridianId, DebugCommands.QiAccount account, double density) {
-        // 带参数的 qi set：逐个目标覆盖所选经脉范围内一个账户的真元与密度，单个目标被拒不影响其他目标。
+                            String meridianId, DebugCommands.QiAccount account, QiDose dose) {
+        // 带参数的 qi set：覆盖所选经脉范围内一个账户的真元，密度与属性比例由 dose 给出。
+        var change = new QiChange("真元已设置", "真元设置失败", meridianId, account);
+        return changeQi(source, selected, change,
+                living -> DebugQiBridge.set(living, amount, meridianId, account, dose));
+    }
+
+    static int fillQi(CommandSourceStack source, Collection<? extends Entity> selected, String meridianId,
+                      OptionalDouble amount, QiDose dose) {
+        // 经所属宿主的调试入口补入内腔真元，新元的密度与属性比例由 dose 给出。
+        var change = new QiChange("真元已补充", "真元补充失败", meridianId, DebugCommands.QiAccount.LUMEN);
+        return changeQi(source, selected, change, living -> DebugQiBridge.fill(living, meridianId, amount, dose));
+    }
+
+    /** 一次 qi fill / set 的回显文字与作用范围。 */
+    private record QiChange(String done, String failed, String meridianId, DebugCommands.QiAccount account) { }
+
+    private static int changeQi(CommandSourceStack source, Collection<? extends Entity> selected, QiChange change,
+                                Function<LivingEntity, FailureCode> submit) {
+        // 逐个目标提交，单个目标被拒不影响其他目标；提交前先留一份快照，回显按前后差逐条经脉写出。
         int successCount = 0;
         for (Entity entity : selected) {
             if (!(entity instanceof LivingEntity living)) {
@@ -316,62 +314,39 @@ public final class DebugFabric implements ModInitializer {
                 continue;
             }
             try {
-                FailureCode failure = DebugQiBridge.set(living, amount, meridianId, account, density);
+                Optional<BodySnapshot> before = DebugBodyAccess.inspect(living);
+                FailureCode failure = submit.apply(living);
                 if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
-                    source.sendFailure(Component.literal("真元设置失败：" + failure.name()));
+                    source.sendFailure(Component.literal(change.failed() + "：" + failure.name()));
                     continue;
                 }
                 successCount++;
-
-                // 反馈从提交后的快照读回该范围该账户的实际总量。
-                double total = DebugBodyAccess.inspect(living)
-                        .map(body -> accountTotal(body, meridianId, account))
-                        .orElse(0.0);
-                source.sendSuccess(() -> Component.literal(String.format(java.util.Locale.ROOT,
-                                "真元已设置：%s / %s%s = %.4f 元", living.getName().getString(),
-                                scopeLabel(meridianId), account.label(), total)),
-                        false /* broadcastToOps */);
+                String text = qiChangeText(living, change, before);
+                source.sendSuccess(() -> Component.literal(text), false /* broadcastToOps */);
             } catch (DebugBodyAccess.DebugHostFailure failure) {
-                source.sendFailure(Component.literal("真元设置失败：" + failure.code().name()));
+                source.sendFailure(Component.literal(change.failed() + "：" + failure.code().name()));
             } catch (RuntimeException failure) {
-                report(source, living, failure, "真元设置失败");
+                report(source, living, failure, change.failed());
             }
         }
         return successCount;
     }
 
-    static int fillQi(CommandSourceStack source, Collection<? extends Entity> selected, String meridianId,
-                      OptionalDouble amount) {
-        // 逐个目标经所属宿主的调试入口补入内腔真元，单个目标被拒不影响其他目标。
-        int successCount = 0;
-        for (Entity entity : selected) {
-            if (!(entity instanceof LivingEntity living)) {
-                source.sendFailure(Component.literal("目标不是活体：" + entity.getName().getString()));
-                continue;
-            }
-            try {
-                FailureCode failure = DebugQiBridge.fill(living, meridianId, amount);
-                if (failure != FailureCode.FAILURE_CODE_UNSPECIFIED) {
-                    source.sendFailure(Component.literal("真元补充失败：" + failure.name()));
-                    continue;
-                }
-                successCount++;
-
-                // 反馈从提交后的快照读回所选范围的内腔总量。
-                double total = DebugBodyAccess.inspect(living)
-                        .map(body -> accountTotal(body, meridianId, DebugCommands.QiAccount.LUMEN))
-                        .orElse(0.0);
-                source.sendSuccess(() -> Component.literal(String.format(java.util.Locale.ROOT,
-                                "真元已补充：%s / %s内腔 = %.4f 元", living.getName().getString(),
-                                scopeLabel(meridianId), total)),
-                        false /* broadcastToOps */);
-            } catch (DebugBodyAccess.DebugHostFailure failure) {
-                source.sendFailure(Component.literal("真元补充失败：" + failure.code().name()));
-            } catch (RuntimeException failure) {
-                report(source, living, failure, "真元补充失败");
-            }
+    private static String qiChangeText(LivingEntity living, QiChange change, Optional<BodySnapshot> before) {
+        // 首行写范围内该账户的实际总量；其后每条有变化的经脉一行，写各属性、形态增减了多少元。
+        Optional<BodySnapshot> after = DebugBodyAccess.inspect(living);
+        double total = after.map(body -> accountTotal(body, change.meridianId(), change.account())).orElse(0.0);
+        StringBuilder text = new StringBuilder(String.format(java.util.Locale.ROOT, "%s：%s / %s%s = %.4f 元",
+                change.done(), living.getName().getString(), scopeLabel(change.meridianId()),
+                change.account().label(), total));
+        boolean wall = change.account() == DebugCommands.QiAccount.WALL;
+        List<String> lines = after.map(body -> QiChangeReport.lines(before, body, change.meridianId(), wall))
+                .orElse(List.of());
+        if (lines.isEmpty()) {
+            text.append("\n  没有变化");
         }
-        return successCount;
+        lines.forEach(line -> text.append("\n  ").append(line));
+        return text.toString();
     }
 
     static int revive(CommandSourceStack source, Collection<? extends Entity> selected) {
@@ -857,13 +832,6 @@ public final class DebugFabric implements ModInitializer {
             return "全身经脉";
         }
         return meridianId + " ";
-    }
-
-    private static double lumenTotal(BodySnapshot body) {
-        return body.getMeridianStatesList().stream()
-                .flatMap(state -> state.getLumenQi().getEntriesList().stream())
-                .mapToDouble(entry -> entry.getAmount())
-                .sum();
     }
 
     private static String techniqueStatusText(BodySnapshot body, TechniqueProgress progress,

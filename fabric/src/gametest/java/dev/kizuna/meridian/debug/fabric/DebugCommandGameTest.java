@@ -6,6 +6,8 @@ import dev.kizuna.meridian.protocol.QiDensity;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianDefinition;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianState;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.QiInventory;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.QiPhase;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.TissueDefinition;
 import dev.kizuna.meridian.technique.fabric.TechniqueFabric;
 import dev.kizuna.meridian.technique.fabric.world.TechniqueLeaps;
@@ -59,6 +61,10 @@ public final class DebugCommandGameTest {
     private static final String LEAP_LINE = "跃步 LEAP";
     private static final String EFFORT_MARK = "做功=";
     private static final String UNKNOWN_WORD = "no_such_word";
+    private static final String WITHERING = "qi_variants:withering";
+    private static final double METAL_SHARE = 0.2;
+    private static final double WITHERING_SHARE = 0.3;
+    private static final String SPLEEN_MERIDIAN_SUFFIX = "_spleen_meridian";
 
     @GameTest(maxTicks = DEFAULT_TIMEOUT)
     public void techniqueCommandsDriveRealCastsLeapsAndForgetting(GameTestHelper context) {
@@ -108,6 +114,7 @@ public final class DebugCommandGameTest {
                 assertSuggests(context, source, "meridian qi fill ", meridian);
                 assertSuggests(context, source, "meridian qi set @", "@s");
                 assertSuggests(context, source, "meridian qi set @s 1 ", "all");
+                assertDoseSuggestions(context, source, meridian);
                 assertSuggests(context, source, "meridian humanoid aggro ", "clear");
             }
             context.succeed();
@@ -121,6 +128,22 @@ public final class DebugCommandGameTest {
         context.runAfterDelay(JOIN_TICKS, () -> {
             try (online) {
                 assertQiParameters(context, online.player, source(online));
+            }
+            context.succeed();
+        });
+    }
+
+    @GameTest(maxTicks = DEFAULT_TIMEOUT)
+    public void qiFillAndSetTakePhaseAttributeAndMix(GameTestHelper context) {
+        // 每个已登记属性都能按指定形态补进一条经脉；mix 按比例分配、余下记无属性；配错整条拒绝且不改身体。
+        var online = new DebugAddonGameTest.DebugTestPlayer(context);
+        context.runAfterDelay(JOIN_TICKS, () -> {
+            try (online) {
+                var source = source(online);
+                assertEveryAttribute(context, online.player, source);
+                assertMixedFill(context, online, source);
+                assertPhasedSet(context, online.player, source);
+                assertBadDoseRejected(context, online.player, source);
             }
             context.succeed();
         });
@@ -356,6 +379,131 @@ public final class DebugCommandGameTest {
         double wallAmount = rounded(wallVolume * SET_DENSITY * QI_SHARE);
         assertCommand(context, source, "meridian qi set " + decimal(wallAmount) + " all wall " + SET_DENSITY);
         assertQi(context, wallTotal(DebugBodyAccess.inspect(player).orElseThrow()), wallAmount, "全身外壁没有覆盖为指定量");
+    }
+
+    private static void assertDoseSuggestions(GameTestHelper context, CommandSourceStack source, String meridian) {
+        // 形态、属性与比例都能补全：phase 列相态，attribute 列附属属性全 ID，mix 补「属性=」和剩下的比例。
+        assertSuggests(context, source, "meridian qi fill ", "phase");
+        assertSuggests(context, source, "meridian qi fill @s " + meridian + " phase ", "liquid");
+        assertSuggests(context, source, "meridian qi fill attribute ", WITHERING);
+        assertSuggests(context, source, "meridian qi fill mix fire=0.3,with", WITHERING + "=");
+        assertSuggests(context, source, "meridian qi fill @s " + meridian + " 1 mix metal=0.2 fire=", "fire=0.8");
+        assertSuggests(context, source, "meridian qi set @s 1 all wall ", "phase");
+        assertSuggests(context, source, "meridian qi set 1 all lumen 0.05 ", "mix");
+    }
+
+    private static void assertEveryAttribute(GameTestHelper context, LivingEntity player, CommandSourceStack source) {
+        // 名单含 Qi-Variants 的附属属性；逐个属性清空后补满第一条经脉，该脉只剩这一种属性的气态真元。
+        List<String> registered = DebugQiAttributes.registered();
+        context.assertTrue(registered.contains(WITHERING), "已登记属性里没有附属属性：" + registered);
+        String id = firstMeridian(player);
+        for (String attribute : registered) {
+            assertCommand(context, source, "meridian qi set 0 all lumen " + QiDensity.FREE);
+            assertCommand(context, source, "meridian qi fill " + id + " phase gas attribute " + attribute);
+            var entries = state(DebugBodyAccess.inspect(player).orElseThrow(), id).getLumenQi().getEntriesList();
+            boolean matches = !entries.isEmpty() && entries.stream().allMatch(qi -> qi.getAttribute().equals(attribute)
+                    && QiDensity.phase(qi.getDensity()) == QiPhase.GAS);
+            context.assertTrue(matches, attribute + " 没有按气态补进 " + id + "：" + entries);
+        }
+    }
+
+    private static void assertMixedFill(GameTestHelper context, DebugAddonGameTest.DebugTestPlayer online,
+                                        CommandSourceStack source) {
+        // 全身按液态补满：每条经脉补进的液态真元里金 0.2、枯萎 0.3、余下 0.5 无属性；回显逐条经脉写出属性与形态。
+        assertCommand(context, source, "meridian qi set 0 all lumen " + QiDensity.FREE);
+        int before = online.chat().size();
+        assertCommand(context, source, "meridian qi fill phase liquid mix metal=" + METAL_SHARE + ",withering="
+                + WITHERING_SHARE);
+        BodySnapshot mixed = DebugBodyAccess.inspect(online.player).orElseThrow();
+        mixed.getMeridianStatesList().forEach(state -> assertMixedShares(context, state));
+        assertWithinLumens(context, mixed);
+
+        String echo = String.join("\n", newLines(online, before));
+        boolean described = echo.contains(firstMeridian(online.player) + "：") && echo.contains("金·液态")
+                && echo.contains(WITHERING + "·液态") && echo.contains("无属性·液态");
+        context.assertTrue(described, "回显没有逐条经脉写出属性与形态：" + echo);
+    }
+
+    private static void assertMixedShares(GameTestHelper context, MeridianState state) {
+        // 宿主补元前先结算身体，比例只按本次补进的液态明细算。
+        QiInventory lumen = state.getLumenQi();
+        double liquid = lumen.getEntriesList().stream()
+                .filter(qi -> QiDensity.phase(qi.getDensity()) == QiPhase.LIQUID)
+                .mapToDouble(qi -> qi.getAmount())
+                .sum();
+        String where = state.getId() + "（" + entries(lumen) + "）";
+        double metal = amount(lumen, "meridian:metal", QiPhase.LIQUID);
+        double withering = amount(lumen, WITHERING, QiPhase.LIQUID);
+        double none = amount(lumen, "meridian:none", QiPhase.LIQUID);
+        context.assertTrue(metal > TOLERANCE && withering > TOLERANCE && none > TOLERANCE,
+                where + " 没有补上液态的金、枯萎和无属性");
+
+        // Human 的脾在内腔占用过九成时，会按明细顺序从脾经取走一小批沉淀进脾，脾经的比例因此偏开，只核对属性与形态。
+        if (state.getId().endsWith(SPLEEN_MERIDIAN_SUFFIX)) {
+            return;
+        }
+        assertQi(context, metal, METAL_SHARE * liquid, where + " 液态金的比例不对");
+        assertQi(context, withering, WITHERING_SHARE * liquid, where + " 液态枯萎的比例不对");
+        assertQi(context, none, (1 - METAL_SHARE - WITHERING_SHARE) * liquid, where + " 余下的无属性比例不对");
+    }
+
+    private static void assertPhasedSet(GameTestHelper context, LivingEntity player, CommandSourceStack source) {
+        // 一条经脉的外壁按固态覆盖为水；再把全身内腔按给定密度覆盖、一半记火，余下一半无属性。
+        String id = firstMeridian(player);
+        BodySnapshot body = DebugBodyAccess.inspect(player).orElseThrow();
+        double wallAmount = rounded(body.getStructure().getMeridians(0).getWallVolume()
+                * QiDensity.baseline(QiPhase.SOLID) * QI_SHARE);
+        context.assertTrue(wallAmount > TOLERANCE, id + " 没有外壁容量，测不了外壁覆盖");
+        assertCommand(context, source, "meridian qi set @s " + decimal(wallAmount) + " " + id
+                + " wall phase solid attribute water");
+        QiInventory wall = state(DebugBodyAccess.inspect(player).orElseThrow(), id).getWallQi();
+        assertQi(context, amount(wall, "meridian:water", QiPhase.SOLID), wallAmount, "外壁没有覆盖为固态水");
+
+        double lumenVolume = body.getStructure().getMeridiansList().stream()
+                .mapToDouble(MeridianDefinition::getLumenVolume)
+                .sum();
+        double lumenAmount = rounded(lumenVolume * SET_DENSITY * QI_SHARE);
+        assertCommand(context, source, "meridian qi set " + decimal(lumenAmount) + " all lumen " + SET_DENSITY
+                + " mix fire=0.5");
+        BodySnapshot set = DebugBodyAccess.inspect(player).orElseThrow();
+        double fire = set.getMeridianStatesList().stream()
+                .mapToDouble(state -> amount(state.getLumenQi(), "meridian:fire", QiPhase.FREE))
+                .sum();
+        assertQi(context, fire, lumenAmount * 0.5, "全身内腔的火没有占一半");
+        assertQi(context, lumenTotal(set), lumenAmount, "全身内腔没有覆盖为指定量");
+    }
+
+    private static void assertBadDoseRejected(GameTestHelper context, LivingEntity player,
+                                              CommandSourceStack source) {
+        // 比例合计超过 1、属性未登记、同一属性写两次、attribute 写两个：都报错，身体不变。
+        BodySnapshot before = DebugBodyAccess.inspect(player).orElseThrow();
+        assertRejected(context, source, "meridian qi fill mix fire=0.6,water=0.5");
+        assertRejected(context, source, "meridian qi fill attribute lava");
+        assertRejected(context, source, "meridian qi fill phase gas mix fire=0.2 fire=0.3");
+        assertRejected(context, source, "meridian qi set 1 all lumen phase gas attribute fire water");
+        BodySnapshot after = DebugBodyAccess.inspect(player).orElseThrow();
+        assertQi(context, lumenTotal(after), lumenTotal(before), "报错的指令改了内腔");
+        assertQi(context, wallTotal(after), wallTotal(before), "报错的指令改了外壁");
+    }
+
+    private static String firstMeridian(LivingEntity entity) {
+        // 构型里的第一条经脉，玩家身体必然有。
+        return DebugBodyAccess.inspect(entity).orElseThrow().getStructure().getMeridians(0).getId();
+    }
+
+    private static String entries(QiInventory inventory) {
+        // 断言失败时列出整份明细：属性=元数@密度，便于看出多出来的是哪种真元。
+        return inventory.getEntriesList().stream()
+                .map(qi -> qi.getAttribute() + "=" + qi.getAmount() + "@" + qi.getDensity())
+                .collect(Collectors.joining(", "));
+    }
+
+    private static double amount(QiInventory inventory, String attribute, QiPhase phase) {
+        // 某属性某形态的元数；同种在库存里唯一，缺省为 0。
+        return inventory.getEntriesList().stream()
+                .filter(qi -> qi.getAttribute().equals(attribute) && QiDensity.phase(qi.getDensity()) == phase)
+                .mapToDouble(qi -> qi.getAmount())
+                .sum();
     }
 
     private static void assertQi(GameTestHelper context, double actual, double expected, String message) {

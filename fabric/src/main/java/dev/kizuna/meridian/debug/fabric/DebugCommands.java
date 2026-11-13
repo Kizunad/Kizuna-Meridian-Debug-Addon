@@ -2,25 +2,33 @@ package dev.kizuna.meridian.debug.fabric;
 
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import dev.kizuna.meridian.debug.HealPlan;
+import dev.kizuna.meridian.debug.QiDose;
+import dev.kizuna.meridian.debug.QiMix;
 import dev.kizuna.meridian.fabric.MeridianCommands;
 import dev.kizuna.meridian.fabric.MeridianCommands.Branch;
 import dev.kizuna.meridian.fabric.MeridianCommands.Targets;
 import dev.kizuna.meridian.human.fabric.HumanBodyStatus;
+import dev.kizuna.meridian.protocol.QiDensity;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianDefinition;
+import dev.kizuna.meridian.protocol.pb.BodyMessages.QiPhase;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.ToDoubleFunction;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.EntityArgument;
@@ -38,6 +46,11 @@ final class DebugCommands {
     private static final double MIN_HEAL_AMOUNT = 0.000001;
     private static final double MIN_FILL_AMOUNT = 0.000001;
     private static final double MIN_DENSITY = 0.01;
+    private static final String PHASE = "phase";
+    private static final String ATTRIBUTE = "attribute";
+    private static final String MIX = "mix";
+    private static final String ATTRIBUTE_ID = "attribute_id";
+    private static final String MIX_SHARES = "shares";
 
     private DebugCommands() {
         // 命令注册只构造 Brigadier 树，不保存服务器状态。
@@ -99,7 +112,7 @@ final class DebugCommands {
     }
 
     private static void qiFill(LiteralArgumentBuilder<CommandSourceStack> fill) {
-        // 省略经脉时补满全身内腔；指定经脉时补满该脉，再带数量时补到该脉的这一总量。
+        // 省略经脉时补满全身内腔；指定经脉时补满该脉，再带数量时补到该脉的这一总量。三处之后都能接形态与属性。
         // 省略目标那一支先注册，Brigadier 会把「qi fill <词>」都交给它，所以这一支要先把词当在线玩家名认。
         MeridianCommands.optionalEntities(fill, (parent, targets) -> {
             WordFill wordFill;
@@ -108,13 +121,21 @@ final class DebugCommands {
             } else {
                 wordFill = DebugCommands::fillListedMeridian;
             }
-            parent.executes(context -> DebugFabric.fillQi(context.getSource(), targets.resolve(context),
-                            WHOLE_BODY, OptionalDouble.empty()))
-                    .then(meridian(targets, DebugCommands::meridianIds)
-                            .executes(context -> wordFill.run(context, targets, OptionalDouble.empty()))
-                            .then(Commands.argument("amount", DoubleArgumentType.doubleArg(MIN_FILL_AMOUNT))
-                                    .executes(context -> wordFill.run(context, targets,
-                                            OptionalDouble.of(DoubleArgumentType.getDouble(context, "amount"))))));
+            DoseRun wholeBody = (context, dose) -> DebugFabric.fillQi(context.getSource(), targets.resolve(context),
+                    WHOLE_BODY, OptionalDouble.empty(), dose);
+            DoseRun listed = (context, dose) -> wordFill.run(context, targets, OptionalDouble.empty(), dose);
+            DoseRun amount = (context, dose) -> wordFill.run(context, targets,
+                    OptionalDouble.of(DoubleArgumentType.getDouble(context, "amount")), dose);
+
+            var amountNode = Commands.argument("amount", DoubleArgumentType.doubleArg(MIN_FILL_AMOUNT))
+                    .executes(context -> amount.run(context, QiDose.FREE));
+            doseOptions(amountNode, amount);
+            var meridianNode = meridian(targets, DebugCommands::meridianIds)
+                    .executes(context -> listed.run(context, QiDose.FREE))
+                    .then(amountNode);
+            doseOptions(meridianNode, listed);
+            parent.executes(context -> wholeBody.run(context, QiDose.FREE)).then(meridianNode);
+            doseOptions(parent, wholeBody);
         });
     }
 
@@ -122,20 +143,27 @@ final class DebugCommands {
     @FunctionalInterface
     private interface WordFill {
         int run(CommandContext<CommandSourceStack> context, Targets<Collection<? extends Entity>> targets,
-                OptionalDouble amount) throws CommandSyntaxException;
+                OptionalDouble amount, QiDose dose) throws CommandSyntaxException;
+    }
+
+    /** qi fill / set 选好范围与数量后的执行点，dose 带上可选的形态与属性比例。 */
+    @FunctionalInterface
+    private interface DoseRun {
+        int run(CommandContext<CommandSourceStack> context, QiDose dose) throws CommandSyntaxException;
     }
 
     private static int fillListedMeridian(CommandContext<CommandSourceStack> context,
-                                          Targets<Collection<? extends Entity>> targets, OptionalDouble amount)
-            throws CommandSyntaxException {
+                                          Targets<Collection<? extends Entity>> targets, OptionalDouble amount,
+                                          QiDose dose) throws CommandSyntaxException {
         // 目标已经写明，这个词只能是经脉 ID。
         return DebugFabric.fillQi(context.getSource(), targets.resolve(context),
-                StringArgumentType.getString(context, "meridian"), amount);
+                StringArgumentType.getString(context, "meridian"), amount, dose);
     }
 
     private static int fillNamedPlayerOrOwnMeridian(CommandContext<CommandSourceStack> context,
                                                     Targets<Collection<? extends Entity>> targets,
-                                                    OptionalDouble amount) throws CommandSyntaxException {
+                                                    OptionalDouble amount, QiDose dose)
+            throws CommandSyntaxException {
         // 目标优先：这个词是在线玩家名，就补满这名玩家全身；否则才当执行者自己的经脉 ID。
         String word = StringArgumentType.getString(context, "meridian");
         CommandSourceStack source = context.getSource();
@@ -146,32 +174,97 @@ final class DebugCommands {
             return 0;
         }
         if (named != null) {
-            return DebugFabric.fillQi(source, List.of(named), WHOLE_BODY, OptionalDouble.empty());
+            return DebugFabric.fillQi(source, List.of(named), WHOLE_BODY, OptionalDouble.empty(), dose);
         }
         if (source.getEntity() == null) {
             source.sendFailure(Component.literal("没有名叫 " + word + " 的在线玩家；控制台和命令方块执行要写玩家名或选择器"));
             return 0;
         }
-        return DebugFabric.fillQi(source, targets.resolve(context), word, amount);
+        return DebugFabric.fillQi(source, targets.resolve(context), word, amount, dose);
     }
 
     private static void qiSet(LiteralArgumentBuilder<CommandSourceStack> set) {
-        // 只给数量时把全身内腔覆盖为游离态真元；带参数形式另指定经脉或 all、内腔或外壁以及密度。
+        // 只给数量时覆盖全身内腔；带参数形式另指定经脉或 all、内腔或外壁，再写密度或形态。三处之后都能接属性。
         MeridianCommands.optionalEntities(set, (parent, targets) -> {
             var meridian = meridian(targets, DebugCommands::meridianIdsAndAll);
             for (QiAccount account : QiAccount.values()) {
-                meridian.then(Commands.literal(account.literal())
-                        .then(Commands.argument("density", DoubleArgumentType.doubleArg(MIN_DENSITY))
-                                .executes(context -> DebugFabric.setQiAccount(context.getSource(),
-                                        targets.resolve(context), DoubleArgumentType.getDouble(context, "amount"),
-                                        meridianScope(context), account,
-                                        DoubleArgumentType.getDouble(context, "density")))));
+                DoseRun scoped = (context, dose) -> DebugFabric.setQiAccount(context.getSource(),
+                        targets.resolve(context), DoubleArgumentType.getDouble(context, "amount"),
+                        meridianScope(context), account, dose);
+                var densityNode = Commands.argument("density", DoubleArgumentType.doubleArg(MIN_DENSITY))
+                        .executes(context -> scoped.run(context, new QiDose(density(context), List.of())));
+                attributeOptions(densityNode, DebugCommands::density, scoped);
+                var accountNode = Commands.literal(account.literal()).then(densityNode);
+                doseOptions(accountNode, scoped);
+                meridian.then(accountNode);
             }
-            parent.then(Commands.argument("amount", DoubleArgumentType.doubleArg(0))
-                    .executes(context -> DebugFabric.setQi(context.getSource(), targets.resolve(context),
-                            DoubleArgumentType.getDouble(context, "amount")))
-                    .then(meridian));
+            DoseRun wholeBody = (context, dose) -> DebugFabric.setQiAccount(context.getSource(),
+                    targets.resolve(context), DoubleArgumentType.getDouble(context, "amount"), WHOLE_BODY,
+                    QiAccount.LUMEN, dose);
+            var amount = Commands.argument("amount", DoubleArgumentType.doubleArg(0))
+                    .executes(context -> wholeBody.run(context, QiDose.FREE))
+                    .then(meridian);
+            doseOptions(amount, wholeBody);
+            parent.then(amount);
         });
+    }
+
+    private static double density(CommandContext<CommandSourceStack> context) {
+        // 带参数 qi set 直接写出的密度。
+        return DoubleArgumentType.getDouble(context, "density");
+    }
+
+    private static void doseOptions(ArgumentBuilder<CommandSourceStack, ?> anchor, DoseRun run) {
+        // 范围与数量之后可写 phase <形态>，再写 attribute <属性> 或 mix <比例>；都省略时是无属性游离态。
+        var phase = Commands.literal(PHASE);
+        for (QiPhase value : QiDose.PHASES) {
+            double baseline = QiDose.baseline(value);
+            var literal = Commands.literal(QiDose.phaseName(value))
+                    .executes(context -> run.run(context, new QiDose(baseline, List.of())));
+            attributeOptions(literal, context -> baseline, run);
+            phase.then(literal);
+        }
+        anchor.then(phase);
+        attributeOptions(anchor, context -> QiDensity.FREE, run);
+    }
+
+    private static void attributeOptions(ArgumentBuilder<CommandSourceStack, ?> node,
+                                         ToDoubleFunction<CommandContext<CommandSourceStack>> density, DoseRun run) {
+        // attribute 只写一个属性，mix 写「属性=比例」列表；两者都取到行尾，属性 ID 里的冒号不用加引号。
+        var attribute = Commands.argument(ATTRIBUTE_ID, StringArgumentType.greedyString())
+                .suggests((context, builder) -> suggestAttribute(builder))
+                .executes(context -> run.run(context, parsedDose(context, density, ATTRIBUTE_ID, QiMix::single)));
+        var mix = Commands.argument(MIX_SHARES, StringArgumentType.greedyString())
+                .suggests((context, builder) -> suggestMix(builder))
+                .executes(context -> run.run(context, parsedDose(context, density, MIX_SHARES, QiMix::parse)));
+        node.then(Commands.literal(ATTRIBUTE).then(attribute)).then(Commands.literal(MIX).then(mix));
+    }
+
+    private static QiDose parsedDose(CommandContext<CommandSourceStack> context,
+                                     ToDoubleFunction<CommandContext<CommandSourceStack>> density, String argument,
+                                     BiFunction<String, Collection<String>, List<QiMix.Share>> parser)
+            throws CommandSyntaxException {
+        // 属性必须在已登记名单里，比例写错时整条指令报错，不改任何身体。
+        String text = StringArgumentType.getString(context, argument);
+        try {
+            return new QiDose(density.applyAsDouble(context), parser.apply(text, DebugQiAttributes.registered()));
+        } catch (IllegalArgumentException invalid) {
+            throw new SimpleCommandExceptionType(Component.literal(invalid.getMessage())).create();
+        }
+    }
+
+    private static CompletableFuture<Suggestions> suggestAttribute(SuggestionsBuilder builder) {
+        // 列出全部已登记属性：内置写短名，附属写全 ID。
+        QiMix.completeAttribute(builder.getRemaining(), DebugQiAttributes.registered()).forEach(builder::suggest);
+        return builder.buildFuture();
+    }
+
+    private static CompletableFuture<Suggestions> suggestMix(SuggestionsBuilder builder) {
+        // 只替换正在输入的最后一项：先补「属性=」，写了等号再补剩下的比例。
+        QiMix.Completion completion = QiMix.completeMix(builder.getRemaining(), DebugQiAttributes.registered());
+        SuggestionsBuilder last = builder.createOffset(builder.getStart() + completion.offset());
+        completion.candidates().forEach(last::suggest);
+        return last.buildFuture();
     }
 
     private static String meridianScope(CommandContext<CommandSourceStack> context) {
