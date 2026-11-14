@@ -5,8 +5,8 @@ description = '调试物品、命令和服务端快照推送。'
 repositories {
     maven { url = 'https://maven.fabricmc.net/' }
     // Threatening 以源码组合进来，完整装配按坐标装入它的 fabric 模块，连带它 include 的寻路核心；
-    // 寻路核心只在 Pathfinding 仓的 core/build/libs，与 Threatening 自己的 flatDir 同一位置。
-    flatDir { dirs new File(kizunaWorkspace.directory('pathfinding'), 'core/build/libs') }
+    // 寻路核心不参与源码组合，按文件取；位置由工作区给（平时是 Pathfinding 仓的 core/build/libs，开了 JAR 仓在仓里）。
+    flatDir { dirs kizunaWorkspace.artifact('pathfinding', 'core', false).parentFile }
 }
 
 dependencies {
