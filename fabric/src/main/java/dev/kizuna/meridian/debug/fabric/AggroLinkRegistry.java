@@ -1,5 +1,7 @@
 package dev.kizuna.meridian.debug.fabric;
 
+import dev.kizuna.meridian.humanoid.fabric.HumanoidCharmFacts;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -27,11 +29,18 @@ final class AggroLinkRegistry {
 
     void tick(MinecraftServer server) {
         // 目标选择器可能在本 tick 改回其他目标，所以在世界 tick 后再次写入调试目标。
+        // 魅惑优先：哪一头被魅惑了，这条覆盖就自动解除、告诉下命令的人，目标交给魅惑去管。
         Iterator<Map.Entry<UUID, AggroLink>> iterator = links.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<UUID, AggroLink> entry = iterator.next();
             Mob source = findMob(server, entry.getKey());
             Mob target = findMob(server, entry.getValue().targetId());
+            Mob charmed = charmed(source, target);
+            if (charmed != null) {
+                yielded(server, entry.getValue(), source, target, charmed);
+                iterator.remove();
+                continue;
+            }
             if (!isValidLink(source, target)) {
                 if (source != null) {
                     source.setTarget(null);
@@ -41,6 +50,33 @@ final class AggroLinkRegistry {
             }
             source.setTarget(target);
         }
+    }
+
+    private static Mob charmed(Mob source, Mob target) {
+        // 这条覆盖的哪一头正被魅惑着；都没有就是 null。
+        if (source != null && HumanoidCharmFacts.controlled(source)) {
+            return source;
+        }
+        if (target != null && HumanoidCharmFacts.controlled(target)) {
+            return target;
+        }
+        return null;
+    }
+
+    private static void yielded(MinecraftServer server, AggroLink link, Mob source, Mob target, Mob charmed) {
+        // 给当初下命令的玩家（还在线的话）聊天栏说一句；控制台下的命令没人可告诉。
+        if (link.commanderId() == null) {
+            return;
+        }
+        ServerPlayer commander = server.getPlayerList().getPlayer(link.commanderId());
+        if (commander != null) {
+            commander.sendSystemMessage(Component.literal(charmed.getName().getString() + " 被魅惑了，调试仇恨 "
+                    + name(source) + " → " + name(target) + " 已自动解除"));
+        }
+    }
+
+    private static String name(Mob mob) {
+        return mob == null ? "（已不在）" : mob.getName().getString();
     }
 
     static boolean canAttack(Mob mob) {
@@ -84,16 +120,17 @@ final class AggroLinkRegistry {
         selections.put(player.getUUID(), new Selection(mobId));
     }
 
-    void link(MinecraftServer server, Mob source, Mob target, AggroLinkMode mode) {
+    void link(MinecraftServer server, Mob source, Mob target, AggroLinkMode mode, UUID commanderId) {
+        // commanderId 是下命令的玩家，覆盖自动解除时要告诉他；控制台下的命令是 null。
         UUID sourceId = source.getUUID();
         UUID targetId = target.getUUID();
         Set<UUID> affected = Set.of(sourceId, targetId);
         clearLinksInvolving(server, affected);
         source.setTarget(target);
-        links.put(sourceId, new AggroLink(targetId));
+        links.put(sourceId, new AggroLink(targetId, commanderId));
         if (mode == AggroLinkMode.MUTUAL) {
             target.setTarget(source);
-            links.put(targetId, new AggroLink(sourceId));
+            links.put(targetId, new AggroLink(sourceId, commanderId));
         }
     }
 
@@ -190,8 +227,8 @@ final class AggroLinkRegistry {
         return null;
     }
 
-    private record AggroLink(UUID targetId) {
-        // 覆盖只保留目标身份，目标死亡或卸载后由 tick 清除。
+    private record AggroLink(UUID targetId, UUID commanderId) {
+        // 覆盖只保留目标身份和下命令的玩家，目标死亡或卸载后由 tick 清除。
     }
 
     private record Selection(UUID mobId) {

@@ -18,7 +18,7 @@
 - `/meridian qi fill [targets] [<经脉> [数量]]`：补满内腔；指定经脉时只补该脉，带数量时把该脉补到这一总量，只补差额不扣除。
 - `/meridian qi set [targets] <数量> [<经脉|all> lumen|wall <密度>]`：覆盖真元库存，总量由 Framework 按各经脉可用体积分配；省略后段时覆盖全身内腔为游离态。宿主拒绝时原样报告失败码。玩家与类人生物都可作目标。
 - `/meridian technique forget [targets] <功法 ID>`：直接遗忘目录功法；ID 按原版标识符读取，带命名空间，例如 `meridian_basic_techniques:light_step`。`technique cooldown clear [targets]` 清空冷却；`technique status [target]` 查看当前施放阶段（WARMUP/ACTIVE/RECOVERY）、最近一次失败码、已学和冷却。学习功法由 Technique 登记（`technique learn`）。
-- `/meridian humanoid aggro <A> <B> [mutual|oneway]`：设置仇恨方向；`/meridian humanoid aggro clear [targets]` 清除覆盖，省略目标时清除全部（仇恨链接只连生物，不含玩家）。
+- `/meridian humanoid aggro <A> <B> [mutual|oneway]`：设置仇恨方向；`/meridian humanoid aggro clear [targets]` 清除覆盖，省略目标时清除全部（仇恨链接只连生物，不含玩家）。仇恨覆盖让位给魅惑：覆盖的哪一头被魅惑了，这条覆盖自动解除，并在下命令（或用牵引器）的玩家聊天栏提示一句；醒了以后不会自己恢复，要再设一次。
 - `/meridian debug fatigue set [targets] <组织 ID|标签|all> <比例>` / `fatigue clear [targets] <组织 ID|标签|all>`：按 Framework 事务设置或清零组织疲劳。标签含冒号，需加引号，例如 `fatigue set @s "human:leg_muscle" 0.5`；补全直接给出带引号的文本。
 
 省略目标与给出单个词的写法共用一个位置：`/meridian qi fill <词>` 先按在线玩家名认，是在线玩家就补满他全身（控制台、命令方块也能这样写）；不是在线玩家才按执行者自己的经脉解析。控制台写的词不是在线玩家名时报错；`qi fill <玩家名> <数量>` 也报错，给玩家补某条经脉要写 `/meridian qi fill <玩家> <经脉> [数量]`，或用选择器。

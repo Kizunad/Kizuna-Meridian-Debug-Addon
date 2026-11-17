@@ -501,7 +501,7 @@ public final class DebugFabric implements ModInitializer {
             return;
         }
         AggroLinkMode mode = player.isShiftKeyDown() ? AggroLinkMode.ONEWAY : AggroLinkMode.MUTUAL;
-        registry.link(player.level().getServer(), source, target, mode);
+        registry.link(player.level().getServer(), source, target, mode, player.getUUID());
         registry.clearSelection(player);
         if (mode == AggroLinkMode.MUTUAL) {
             sendAggroMessage(player, source.getName().getString() + " ⇄ "
@@ -548,7 +548,8 @@ public final class DebugFabric implements ModInitializer {
             source.sendFailure(Component.literal("B 该生物无法攻击"));
             return 0;
         }
-        DebugFabric.INSTANCE.aggroLinks.link(source.getServer(), sourceMob, targetMob, mode);
+        UUID commanderId = source.getEntity() instanceof ServerPlayer commander ? commander.getUUID() : null;
+        DebugFabric.INSTANCE.aggroLinks.link(source.getServer(), sourceMob, targetMob, mode, commanderId);
         String relation = mode == AggroLinkMode.MUTUAL ? " ⇄ " : " → ";
         String suffix = mode == AggroLinkMode.MUTUAL ? " 互相仇恨" : " 单向仇恨";
         source.sendSuccess(() -> Component.literal(sourceMob.getName().getString() + relation
