@@ -1,13 +1,20 @@
 package dev.kizuna.meridian.debug.verification;
 
+import com.google.protobuf.Any;
+import com.google.protobuf.BytesValue;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Int64Value;
+import com.google.protobuf.StringValue;
 import dev.kizuna.meridian.debug.DamageLogEntry;
 import dev.kizuna.meridian.debug.DamageLogFormatter;
+import dev.kizuna.meridian.debug.AddonProgressDisplay;
 import dev.kizuna.meridian.debug.HealPlan;
 import dev.kizuna.meridian.protocol.pb.BodyMessages;
 import dev.kizuna.meridian.protocol.pb.HealthMessages;
 import org.junit.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -56,6 +63,34 @@ public final class DebugAddonUnitTest {
         assertEquals("left_arm", health.get(0).getTarget().getPartId());
         assertEquals("left_arm_muscle", all.get(2).getTarget().getTissueId());
         assertEquals("left_arm_muscle", stamina.get(0).getTissueId());
+    }
+
+    @Test
+    public void addonProgressDisplaysSimpleValuesInKeyOrder() {
+        Map<String, Any> progress = Map.of(
+                "sample:text", Any.pack(StringValue.of("ready")),
+                "sample:count", Any.pack(Int64Value.of(7)));
+
+        List<AddonProgressDisplay> entries = AddonProgressDisplay.from(progress);
+
+        assertEquals(List.of("sample:count", "sample:text"), entries.stream()
+                .map(AddonProgressDisplay::key).toList());
+        assertEquals("lens.addon.sample.count", entries.get(0).translationKey());
+        assertEquals("7", entries.get(0).value());
+        assertEquals("ready", entries.get(1).value());
+    }
+
+    @Test
+    public void addonProgressSkipsInvalidAndUnsupportedValues() {
+        Map<String, Any> progress = Map.of(
+                "invalid", Any.pack(StringValue.of("skip")),
+                "sample:unsupported", Any.pack(BytesValue.of(ByteString.copyFrom(new byte[]{1}))),
+                "sample:valid", Any.pack(StringValue.of("keep")));
+
+        List<AddonProgressDisplay> entries = AddonProgressDisplay.from(progress);
+
+        assertEquals(List.of("sample:valid"), entries.stream()
+                .map(AddonProgressDisplay::key).toList());
     }
 
     private static BodyMessages.BodySnapshot snapshot() {

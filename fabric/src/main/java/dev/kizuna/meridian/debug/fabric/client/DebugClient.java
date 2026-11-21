@@ -1,5 +1,6 @@
 package dev.kizuna.meridian.debug.fabric.client;
 
+import dev.kizuna.meridian.debug.AddonProgressDisplay;
 import dev.kizuna.meridian.debug.fabric.LensStatePayload;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.BodySnapshot;
 import dev.kizuna.meridian.protocol.pb.BodyMessages.MeridianCondition;
@@ -12,11 +13,14 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.locale.Language;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /** 肢体透视镜 HUD；所有数值来自服务端快照包。 */
@@ -33,6 +37,9 @@ public final class DebugClient implements ClientModInitializer {
     private static final int NO_BODY_TEXT_Y_OFFSET = 16;
     private static final int NO_BODY_PANEL_HEIGHT = 34;
     private static final int BASE_PANEL_HEIGHT = 58;
+    private static final int ADDON_LINE_HEIGHT = 12;
+    private static final int ADDON_ICON_SIZE = 8;
+    private static final int ADDON_TEXT_GAP = 3;
     private static final int PART_LINES_PER_PART = 2;
     private static final int PANEL_BACKGROUND = 0x99000000;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
@@ -44,7 +51,7 @@ public final class DebugClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        // 包的字段由通道编解码读出；26.2 的收包回调已在客户端主线程上，直接切换 HUD 读取的状态。
+        // 收包回调已在客户端主线程上，直接切换 HUD 读取的状态。
         // 原 HUD 回调在原版界面之后绘制，26.2 改为登记到 HUD 层末尾。
         ClientPlayNetworking.registerGlobalReceiver(LensStatePayload.TYPE, (payload, context) -> {
             if (!payload.hasTarget()) {
@@ -81,7 +88,8 @@ public final class DebugClient implements ClientModInitializer {
         int x = client.getWindow().getGuiScaledWidth() - PANEL_WIDTH - PANEL_X_MARGIN;
         int y = PANEL_Y;
         BodySnapshot body = current.body();
-        int height = panelHeight(body);
+        List<AddonProgressDisplay> addons = visibleAddonProgress(body);
+        int height = panelHeight(body, addons);
         context.fill(x, y, x + PANEL_WIDTH, y + height, PANEL_BACKGROUND);
         context.text(client.font, Component.literal("透视：" + current.targetName()),
                 x + PANEL_TEXT_X_OFFSET, y + HEADER_TEXT_Y_OFFSET, TEXT_COLOR);
@@ -90,19 +98,20 @@ public final class DebugClient implements ClientModInitializer {
                     x + PANEL_TEXT_X_OFFSET, y + NO_BODY_TEXT_Y_OFFSET, WARNING_TEXT_COLOR);
             return;
         }
-        renderBody(context, client, body, x + PANEL_TEXT_X_OFFSET, y + NO_BODY_TEXT_Y_OFFSET);
+        renderBody(context, client, body, addons, x + PANEL_TEXT_X_OFFSET, y + NO_BODY_TEXT_Y_OFFSET);
     }
 
-    private static int panelHeight(BodySnapshot body) {
+    private static int panelHeight(BodySnapshot body, List<AddonProgressDisplay> addons) {
         // 高度按实际部位数量增长，保证每个部位都有自己的条目。
         if (body == null) {
             return NO_BODY_PANEL_HEIGHT;
         }
         int partLines = body.getStructure().getPartsCount() * PART_LINES_PER_PART;
-        return BASE_PANEL_HEIGHT + partLines * LINE_HEIGHT;
+        return BASE_PANEL_HEIGHT + partLines * LINE_HEIGHT + addons.size() * ADDON_LINE_HEIGHT;
     }
 
-    private static void renderBody(GuiGraphicsExtractor context, Minecraft client, BodySnapshot body, int x, int y) {
+    private static void renderBody(GuiGraphicsExtractor context, Minecraft client, BodySnapshot body,
+                                   List<AddonProgressDisplay> addons, int x, int y) {
         // 部位、总量、体力和真元均从同一份服务端快照计算。
         var structure = body.getStructure();
         var partStates = body.getPartStatesList();
@@ -129,6 +138,34 @@ public final class DebugClient implements ClientModInitializer {
         String status = status(body);
         context.text(client.font, Component.literal("状态：" + status), x, qiLine,
                 STATUS_TEXT_COLOR);
+        int addonLine = qiLine + LINE_HEIGHT;
+        for (AddonProgressDisplay addon : addons) {
+            addonLine = drawAddon(context, client, addon, x, addonLine);
+        }
+    }
+
+    private static List<AddonProgressDisplay> visibleAddonProgress(BodySnapshot body) {
+        if (body == null) {
+            return List.of();
+        }
+        return AddonProgressDisplay.from(body.getAddonProgressMap()).stream()
+                .filter(entry -> Language.getInstance().has(entry.translationKey()))
+                .toList();
+    }
+
+    private static int drawAddon(GuiGraphicsExtractor context, Minecraft client,
+                                 AddonProgressDisplay addon, int x, int y) {
+        Identifier icon = Identifier.fromNamespaceAndPath(addon.namespace(),
+                "textures/gui/lens/" + addon.path() + ".png");
+        int textX = x;
+        if (client.getResourceManager().getResource(icon).isPresent()) {
+            context.blit(RenderPipelines.GUI_TEXTURED, icon, x, y, 0, 0,
+                    ADDON_ICON_SIZE, ADDON_ICON_SIZE, ADDON_ICON_SIZE, ADDON_ICON_SIZE);
+            textX += ADDON_ICON_SIZE + ADDON_TEXT_GAP;
+        }
+        Component text = Component.translatable(addon.translationKey(), addon.value());
+        context.text(client.font, text, textX, y, TEXT_COLOR);
+        return y + ADDON_LINE_HEIGHT;
     }
 
     private static int drawBar(GuiGraphicsExtractor context, Minecraft client, String label,
